@@ -55,6 +55,7 @@ tools/genicon/      图标生成
 ## 其他
 
 - 远端仓库 `https://github.com/macaoyxx/log-hunter`（main 分支）；`build/bin`、`frontend/dist`、`node_modules`、`release/` 已在 `.gitignore`。
-- **发版**走根目录 `release.ps1 -Version <x.y.z>`：构建 → `release/<版本>/` 拷 exe（临时文件）→ 压 zip → 删 exe，目录内最终只留 zip；产物不进 git，经 GitHub Release 上传。版本号用 git tag（如 `v0.0.1`）。
+- **发版**走 `scripts/`（bash，跨平台）：`scripts/package.sh <x.y.z>` 仅本地打包（构建 ldflags 注入版本 → `release/<版本>/` 只留 zip）；`scripts/publish.sh <x.y.z>` 先打包再发布（推 tag + gh release create）。产物不进 git。
+- **发布确认铁律（写死，不可绕过）**：任何发布动作（push tag / gh release create）前必须由用户在终端显式输入 yes 确认——publish.sh 内置确认门是流程的一部分，不得移除、不得新增跳过参数；**AI 也不得代替用户确认或绕过该门执行发布**。
 - `frontend/package.json.md5` 是 Wails 的依赖指纹缓存，勿手工编辑。
 - 换应用图标后 Windows 有系统缓存，旧图残留需重建快捷方式或重启资源管理器。

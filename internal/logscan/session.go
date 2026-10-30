@@ -35,6 +35,8 @@ type FileEntry struct {
 	idx    *LineIndex
 	parser *LineParser
 	enc    TextEncoding
+
+	tempDir string // zip 解压来源目录（非空 = 临时解压产物，随移除/清空删除）
 }
 
 // QuerySpec 查询条件（时间戳为 unixNano，0 = 不限；级别为 Level 枚举值列表）
@@ -74,9 +76,9 @@ type QueryStats struct {
 // FileProgress 文件加载进度（事件负载）
 type FileProgress struct {
 	Name   string `json:"name"`   // 当前文件名
-	Phase  string `json:"phase"`  // detect | index
-	Done   int64  `json:"done"`   // 已处理字节
-	Total  int64  `json:"total"`  // 总字节
+	Phase  string `json:"phase"`  // detect | index | unzip
+	Done   int64  `json:"done"`   // 已处理字节（unzip 为已完成条目数）
+	Total  int64  `json:"total"`  // 总字节（unzip 为条目总数）
 	FileNo int    `json:"fileNo"` // 第几个文件（1-based）
 }
 
@@ -87,7 +89,8 @@ type QueryProgress struct {
 	Matched int   `json:"matched"`
 }
 
-// Session 一次排查会话：文件与索引全内存，不落盘；清空即释放
+// Session 一次排查会话：文件与索引全内存，不落盘；清空即释放。
+// zip 解压产物是唯一例外——落系统临时目录，随移除/清空/退出自动删除，保持零残留
 type Session struct {
 	mu      sync.RWMutex
 	entries []*FileEntry
@@ -96,11 +99,15 @@ type Session struct {
 	stats   QueryStats
 	cancel  context.CancelFunc // 当前进行中的查询/索引
 	opMu    sync.Mutex         // 串行化长操作（加载/查询），避免并发扫描互相干扰
+
+	tempRoot  string           // zip 解压临时根目录（懒建，ClearAll 整体删除）
+	zipDirSeq int              // zip 子目录序号
+	zips      map[string]bool  // 已加载 zip 源绝对路径（防重复拖入双份内存）
 }
 
 // NewSession 创建空会话
 func NewSession() *Session {
-	return &Session{}
+	return &Session{zips: make(map[string]bool)}
 }
 
 // CancelAll 取消进行中的加载或查询
@@ -112,9 +119,11 @@ func (s *Session) CancelAll() {
 	}
 }
 
-// AddFiles 打开文件、探测格式并构建索引；同一会话内重复添加同一路径直接返回已有条目。
-// onProgress 可为 nil；单个文件失败不影响其余（err 聚合返回）
-func (s *Session) AddFiles(ctx context.Context, paths []string, onProgress func(FileProgress)) (added []*FileEntry, errs []string) {
+// AddFiles 打开文件、探测格式并构建索引；.zip 自动解压后加载其中文本文件；
+// 同一会话内重复添加同一路径直接返回已有条目。
+// onProgress 可为 nil；单个文件失败不影响其余（err 聚合返回）；
+// notices 为非错误提示（zip 内跳过项等）
+func (s *Session) AddFiles(ctx context.Context, paths []string, onProgress func(FileProgress)) (added []*FileEntry, errs, notices []string) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	ctx, cancel := context.WithCancel(ctx)
@@ -132,10 +141,21 @@ func (s *Session) AddFiles(ctx context.Context, paths []string, onProgress func(
 	for _, p := range paths {
 		if ctx.Err() != nil {
 			errs = append(errs, "已取消")
-			return added, errs
+			return added, errs, notices
 		}
 		fileNo++
-		e, err := s.addOne(ctx, p, fileNo, onProgress)
+		// zip 分流：解压临时目录后逐个文本文件走正常加载管线
+		if strings.EqualFold(filepath.Ext(p), ".zip") {
+			es, ns, err := s.addZip(ctx, p, fileNo, onProgress)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", filepath.Base(p), err))
+				continue
+			}
+			added = append(added, es...)
+			notices = append(notices, ns...)
+			continue
+		}
+		e, err := s.addOne(ctx, p, fileNo, onProgress, "", "")
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", filepath.Base(p), err))
 			continue
@@ -144,11 +164,13 @@ func (s *Session) AddFiles(ctx context.Context, paths []string, onProgress func(
 			added = append(added, e)
 		}
 	}
-	return added, errs
+	return added, errs, notices
 }
 
-// addOne 处理单个文件；e 为 nil 且 err 为 nil 表示重复添加已跳过
-func (s *Session) addOne(ctx context.Context, path string, fileNo int, onProgress func(FileProgress)) (*FileEntry, error) {
+// addOne 处理单个文件；e 为 nil 且 err 为 nil 表示重复添加已跳过。
+// display 非空时作为显示名（zip 解压产物显示「zip名/相对路径」）；
+// tempDir 非空标记临时解压产物（随移除/清空删除）
+func (s *Session) addOne(ctx context.Context, path string, fileNo int, onProgress func(FileProgress), display, tempDir string) (*FileEntry, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -193,11 +215,15 @@ func (s *Session) addOne(ctx context.Context, path string, fileNo int, onProgres
 	}
 
 	tsMin, tsMax := idx.TSRange()
+	name := filepath.Base(abs)
+	if display != "" {
+		name = display
+	}
 	e := &FileEntry{
-		Path: abs, Name: filepath.Base(abs), Size: lf.Size(),
+		Path: abs, Name: name, Size: lf.Size(),
 		Enc: enc.String(), Format: parser.Kind, HasTime: parser.HasTime(),
 		LineCnt: int64(idx.LineCount()), TSMin: tsMin, TSMax: tsMax,
-		lf: lf, idx: idx, parser: parser, enc: enc,
+		lf: lf, idx: idx, parser: parser, enc: enc, tempDir: tempDir,
 	}
 	if parser.Kind == "text" {
 		e.Format = parser.Template
@@ -219,16 +245,31 @@ func (s *Session) Files() []*FileEntry {
 	return out
 }
 
-// RemoveFile 移除单个文件并释放其索引
+// RemoveFile 移除单个文件并释放其索引；zip 解压产物移除后若同目录无其他引用，
+// 一并删除该 zip 的临时子目录（零残留）
 func (s *Session) RemoveFile(id int64) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	s.mu.Lock()
+	var tempDir string
 	for i, e := range s.entries {
 		if e.ID == id {
 			_ = e.lf.Close()
+			tempDir = e.tempDir
 			s.entries = append(s.entries[:i], s.entries[i+1:]...)
 			break
+		}
+	}
+	if tempDir != "" {
+		used := false
+		for _, e := range s.entries {
+			if e.tempDir == tempDir {
+				used = true
+				break
+			}
+		}
+		if !used {
+			_ = os.RemoveAll(tempDir)
 		}
 	}
 	s.mu.Unlock()
@@ -236,7 +277,7 @@ func (s *Session) RemoveFile(id int64) {
 	s.stats = QueryStats{}
 }
 
-// ClearAll 一键清空：释放全部文件、索引与结果，马上可以拖入下一批
+// ClearAll 一键清空：释放全部文件、索引与结果，删除 zip 解压临时根目录，马上可以拖入下一批
 func (s *Session) ClearAll() {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -244,8 +285,15 @@ func (s *Session) ClearAll() {
 	for _, e := range s.entries {
 		_ = e.lf.Close()
 	}
+	root := s.tempRoot
 	s.entries = nil
+	s.tempRoot = ""
+	s.zipDirSeq = 0
+	s.zips = make(map[string]bool)
 	s.mu.Unlock()
+	if root != "" {
+		_ = os.RemoveAll(root)
+	}
 	s.results = nil
 	s.stats = QueryStats{}
 }

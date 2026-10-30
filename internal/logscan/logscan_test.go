@@ -1,6 +1,8 @@
 package logscan
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -8,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 // writeTemp 写临时日志文件
@@ -131,7 +135,7 @@ func TestBuildIndexAndQuery(t *testing.T) {
 func newTestSession(t *testing.T, content string) *Session {
 	t.Helper()
 	s := NewSession()
-	added, errs := s.AddFiles(context.Background(), []string{writeTemp(t, content)}, nil)
+	added, errs, _ := s.AddFiles(context.Background(), []string{writeTemp(t, content)}, nil)
 	if len(errs) > 0 {
 		t.Fatal(errs)
 	}
@@ -401,5 +405,112 @@ func TestCapLine(t *testing.T) {
 	got := capLine(long)
 	if len(got) > maxLineBytes+50 {
 		t.Fatalf("超长行应被防御截断: %d", len(got))
+	}
+}
+
+// gbkTestName 把中文名转为 GBK 字节串：模拟老 Windows 打包工具写入的非 UTF-8 文件名
+func gbkTestName(t *testing.T, s string) string {
+	t.Helper()
+	out, err := simplifiedchinese.GBK.NewEncoder().String(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestAddZip(t *testing.T) {
+	dir := t.TempDir()
+
+	// 内层 zip（真实 zip 字节）：嵌套 zip 应被二进制校验自动跳过（不递归）
+	var inner bytes.Buffer
+	iw := zip.NewWriter(&inner)
+	w, _ := iw.Create("inner.log")
+	_, _ = w.Write([]byte("inner\n"))
+	_ = iw.Close()
+
+	zipPath := filepath.Join(dir, "logs.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, _ = zw.Create("logs/app.log.101") // 轮转命名：验证不吃扩展名的亏
+	_, _ = w.Write([]byte(stdLog))
+	w, _ = zw.Create("bin/logo.png") // 二进制（PNG 头含 NUL）
+	_, _ = w.Write([]byte{0x89, 'P', 'N', 'G', 0x00, 0x0D, 0x0A})
+	w, _ = zw.Create("empty.txt") // 空文件（不写内容）
+	w, _ = zw.Create("nested.zip")
+	_, _ = w.Write(inner.Bytes())
+	eh, _ := zw.CreateHeader(&zip.FileHeader{Name: "../evil.txt", Method: zip.Store}) // Zip Slip
+	_, _ = eh.Write([]byte("evil"))
+	gh, _ := zw.CreateHeader(&zip.FileHeader{Name: gbkTestName(t, "日志.log"), Method: zip.Store}) // GBK 文件名
+	_, _ = gh.Write([]byte("gbk name file\n"))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, notices := s.AddFiles(context.Background(), []string{zipPath}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	// 文本条目 2 个：轮转命名日志 + GBK 中文名文件
+	if len(added) != 2 {
+		t.Fatalf("应加载 2 个文本文件: %d（notices=%v）", len(added), notices)
+	}
+	if added[0].Name != "logs.zip/logs/app.log.101" {
+		t.Fatalf("显示名错误: %s", added[0].Name)
+	}
+	if added[1].Name != "logs.zip/日志.log" {
+		t.Fatalf("GBK 文件名解码错误: %s", added[1].Name)
+	}
+	// 跳过提示：二进制 / 空 / 嵌套 zip / 路径非法
+	joined := strings.Join(notices, "|")
+	for _, want := range []string{"二进制", "空文件", "nested.zip", "evil.txt"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("跳过提示应含 %q: %v", want, notices)
+		}
+	}
+	// Zip Slip：解压目录之外无逃逸文件
+	if _, err := os.Stat(filepath.Join(dir, "evil.txt")); !os.IsNotExist(err) {
+		t.Error("Zip Slip：evil.txt 不应出现在解压目录外")
+	}
+	// zip 内文本可正常查询
+	e := added[0]
+	stats, err := s.RunQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}, Keywords: []string{"E502"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Total != 1 {
+		t.Fatalf("zip 内文本查询应命中 1 条: %d", stats.Total)
+	}
+	// 重复拖入同一 zip：跳过不重复加载
+	added2, _, notices2 := s.AddFiles(context.Background(), []string{zipPath}, nil)
+	if len(added2) != 0 || !strings.Contains(strings.Join(notices2, ""), "已加载过") {
+		t.Fatalf("重复 zip 应跳过: added=%d notices=%v", len(added2), notices2)
+	}
+	// 临时目录生命周期：全部移除 → zip 子目录删（根保留）；清空 → 根整体删除
+	root := s.tempRoot
+	if root == "" {
+		t.Fatal("应创建临时根目录")
+	}
+	sub := filepath.Join(root, "zip-1")
+	if _, err := os.Stat(sub); err != nil {
+		t.Fatalf("zip 子目录应存在: %v", err)
+	}
+	for _, e := range s.Files() {
+		s.RemoveFile(e.ID)
+	}
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Error("全部移除后 zip 子目录应删除")
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatal("临时根在 ClearAll 前应保留")
+	}
+	s.ClearAll()
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Error("清空后临时根应删除")
 	}
 }

@@ -20,6 +20,7 @@ const querying = ref(false)
 const queryProg = ref<{ scanned: number; total: number; matched: number } | null>(null)
 const stats = ref<logscan.QueryStats | null>(null)
 const queryError = ref('')
+const fileNotice = ref('') // 加载提示（zip 内跳过项等，非错误）
 
 // 最近一次查询的文本条件（命中高亮用）
 const hlKeywords = ref<string[]>([])
@@ -79,6 +80,7 @@ async function addFiles(paths: string[]) {
     if (res.errors?.length) {
       queryError.value = '部分文件加载失败：\n' + res.errors.join('\n')
     }
+    fileNotice.value = res.notices?.length ? res.notices.join('\n') : ''
   } catch (e) {
     queryError.value = '加载失败：' + e
   } finally {
@@ -99,6 +101,7 @@ async function clearAll() {
   selected.value = new Set()
   stats.value = null
   queryError.value = ''
+  fileNotice.value = ''
   ctxTarget.value = null
   hlKeywords.value = []
   hlRegex.value = ''
@@ -159,6 +162,10 @@ function openContext(fileId: number, offset: number) {
       :files="files" :selected="selected" :loading="loadingFiles" :progress="fileProg"
       @add="addFiles" @remove="removeFile" @clear="clearAll" @toggle="toggleSelect"
     />
+    <div v-if="fileNotice" class="notice-bar">
+      <pre class="notice-text">{{ fileNotice }}</pre>
+      <button class="notice-x" title="关闭提示" @click="fileNotice = ''">✕</button>
+    </div>
     <QueryBar
       ref="queryBarRef"
       :disabled="!canQuery" :querying="querying" :progress="queryProg" :error="queryError"
@@ -201,4 +208,34 @@ function openContext(fileId: number, offset: number) {
   letter-spacing: .04em;
 }
 .tag { color: var(--text-faint); font-size: 12px; }
+.notice-bar {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 12px;
+  background: var(--amber-soft);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius);
+}
+.notice-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.notice-x {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px;
+}
+.notice-x:hover { color: var(--text); }
 </style>

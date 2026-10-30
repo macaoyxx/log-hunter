@@ -102,6 +102,7 @@ export namespace main {
 	export class AddFilesResult {
 	    files: logscan.FileEntry[];
 	    errors: string[];
+	    notices: string[];
 	    allFiles: logscan.FileEntry[];
 	
 	    static createFrom(source: any = {}) {
@@ -112,6 +113,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.files = this.convertValues(source["files"], logscan.FileEntry);
 	        this.errors = source["errors"];
+	        this.notices = source["notices"];
 	        this.allFiles = this.convertValues(source["allFiles"], logscan.FileEntry);
 	    }
 	

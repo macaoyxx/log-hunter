@@ -31,18 +31,20 @@ func (a *App) shutdown(ctx context.Context) { a.session.ClearAll() }
 type AddFilesResult struct {
 	Files    []*logscan.FileEntry `json:"files"`
 	Errors   []string             `json:"errors"`
+	Notices  []string             `json:"notices"`  // 非错误提示（zip 内二进制/加密等跳过项）
 	AllFiles []*logscan.FileEntry `json:"allFiles"` // 当前会话全部文件
 }
 
-// AddFiles 拖拽添加文件：探测格式并建索引，进度经 "files:progress" 事件推送
+// AddFiles 拖拽添加文件：探测格式并建索引（.zip 自动解压后加载其中文本文件），
+// 进度经 "files:progress" 事件推送
 func (a *App) AddFiles(paths []string) (*AddFilesResult, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("没有文件")
 	}
-	files, errs := a.session.AddFiles(a.ctx, paths, func(p logscan.FileProgress) {
+	files, errs, notices := a.session.AddFiles(a.ctx, paths, func(p logscan.FileProgress) {
 		runtime.EventsEmit(a.ctx, "files:progress", p)
 	})
-	return &AddFilesResult{Files: files, Errors: errs, AllFiles: a.session.Files()}, nil
+	return &AddFilesResult{Files: files, Errors: errs, Notices: notices, AllFiles: a.session.Files()}, nil
 }
 
 // RemoveFile 移除单个文件
@@ -157,7 +159,7 @@ func (a *App) PickFiles() []string {
 	paths, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "选择日志文件",
 		Filters: []runtime.FileFilter{
-			{DisplayName: "日志文件", Pattern: "*.log;*.txt;*.out;*.log.*;*.trace"},
+			{DisplayName: "日志文件", Pattern: "*.log;*.txt;*.out;*.log.*;*.trace;*.zip"},
 			{DisplayName: "所有文件", Pattern: "*.*"},
 		},
 	})

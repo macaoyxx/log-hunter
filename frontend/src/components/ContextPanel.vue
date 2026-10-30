@@ -4,6 +4,7 @@ import { GetContext } from '../../wailsjs/go/main/App'
 import { logscan } from '../../wailsjs/go/models'
 import HighlightText from './HighlightText.vue'
 import ContextMenu from './ContextMenu.vue'
+import { SLOT_NAMES } from '../constants'
 
 const props = defineProps<{
   target: { fileId: number; offset: number }
@@ -23,6 +24,8 @@ const loading = ref(false)
 const error = ref('')
 const copied = ref('')
 const bodyEl = ref<HTMLElement | null>(null)
+// 放大铺满/还原（面板期间状态，关闭重开回默认；长日志行排查用）
+const maximized = ref(false)
 async function load() {
   loading.value = true
   error.value = ''
@@ -44,8 +47,8 @@ watch(() => props.target.offset, () => load())
 function fmtTs(ns: number): string {
   if (!ns) return ''
   const d = new Date(ns / 1e6)
-  const p = (x: number) => String(x).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  const p = (x: number, n = 2) => String(x).padStart(n, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`
 }
 
 const LEVEL_NAMES = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']
@@ -80,7 +83,7 @@ function copyAll() {
 // ---------- 右键格式标记 ----------
 // 5 个颜色槽位（标记1~5），每槽一组词；标记后详情内所有相同文本同步着色。
 // 面板期间保留（jump 换目标行、调前后行数不丢），关闭面板组件卸载即清空
-const MARK_SLOTS = 5
+const MARK_SLOTS = SLOT_NAMES.length
 const markSlots = ref<string[][]>(Array.from({ length: MARK_SLOTS }, () => []))
 const menu = ref<{ x: number; y: number; sel: string } | null>(null)
 
@@ -122,7 +125,7 @@ function clearAllMarks() {
 </script>
 
 <template>
-  <div class="panel">
+  <div class="panel" :class="{ maximized }">
     <div class="head">
       <div class="title">
         <span class="t-icon">🔎</span>
@@ -136,6 +139,7 @@ function clearAllMarks() {
         <button class="ghost" @click="copyAll" title="复制当前显示的全部上下文行（含前后）">⧉ 全部</button>
         <span v-if="copied" class="copied-tip">{{ copied }}</span>
         <button class="ghost" @click="load" :disabled="loading" title="重新读取">⟳</button>
+        <button class="ghost" @click="maximized = !maximized" :title="maximized ? '还原窗口' : '放大铺满'">{{ maximized ? '⤢' : '⛶' }}</button>
         <button class="ghost" @click="emit('close')" title="关闭">✕</button>
       </div>
     </div>
@@ -164,7 +168,7 @@ function clearAllMarks() {
       @copy="copySel" @mark="applyMark" @clear-slot="clearSlot" @clear-all="clearAllMarks"
       @close="menu = null"
     />
-    <div class="foot">提示：点击任意行可把视角移到那里；选中文本右键可加格式标记；行内容为完整原文（左右滚动查看）</div>
+    <div class="foot">提示：点击任意行移视角；选中文本右键加标记；⛶ 可放大铺满；行内容为完整原文（左右滚动查看）</div>
   </div>
 </template>
 
@@ -180,7 +184,10 @@ function clearAllMarks() {
   flex-direction: column;
   z-index: 100;
   animation: slide-in .18s ease-out;
+  transition: width .18s ease;
 }
+/* 放大铺满：长日志行排查 */
+.panel.maximized { width: 100vw; }
 @keyframes slide-in {
   from { transform: translateX(30px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
@@ -227,7 +234,7 @@ function clearAllMarks() {
 }
 .crow.target .c-line { color: var(--amber); font-weight: 700; }
 .c-line { width: 62px; flex: none; color: var(--text-faint); text-align: right; margin-right: 12px; }
-.c-ts { width: 104px; flex: none; color: var(--text-dim); font-size: 11.5px; }
+.c-ts { width: 160px; flex: none; color: var(--text-dim); font-size: 11.5px; }
 .c-lvl { width: 60px; flex: none; }
 .c-text {
   flex: none;

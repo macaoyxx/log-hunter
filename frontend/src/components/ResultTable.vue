@@ -190,7 +190,7 @@ function fmtTs(ns: number): string {
   if (!ns) return ''
   const d = new Date(ns / 1e6)
   const p = (x: number, n = 2) => String(x).padStart(n, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`
 }
 const LEVEL_NAMES = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']
 
@@ -352,9 +352,9 @@ async function doExport(fmt: 'txt' | 'csv') {
   user-select: none;
   will-change: transform;
 }
-.h-file { width: 200px; flex: none; }
+.h-file { width: 140px; flex: none; }
 .h-line { width: 86px; flex: none; text-align: right; }
-.h-ts { width: 122px; flex: none; padding-left: 12px; }
+.h-ts { width: 180px; flex: none; padding-left: 12px; }
 .h-lvl { width: 64px; flex: none; }
 .h-text { flex: none; color: var(--text-faint); font-weight: 400; font-size: 11px; }
 
@@ -384,11 +384,11 @@ async function doExport(fmt: 'txt' | 'csv') {
 .row.sel .c-line { color: var(--amber); font-weight: 700; }
 .row.sel .c-file { color: var(--amber); }
 .c-file {
-  width: 200px; flex: none; color: var(--text-dim);
+  width: 140px; flex: none; color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis;
 }
 .c-line { width: 86px; flex: none; color: var(--text-faint); text-align: right; }
-.c-ts { width: 122px; flex: none; color: var(--text-dim); font-size: 11.5px; padding-left: 12px; }
+.c-ts { width: 180px; flex: none; color: var(--text-dim); font-size: 11.5px; padding-left: 12px; }
 .c-lvl { width: 64px; flex: none; }
 .c-text {
   flex: none;

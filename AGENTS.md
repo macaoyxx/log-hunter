@@ -47,6 +47,8 @@ tools/genicon/      图标生成
 
 - 注释一律中文；复杂业务逻辑写详细「为什么」注释，简单代码不注释。
 - 前端不引 UI 框架，组件手写；高亮必须走 `HighlightText.vue` 的分段渲染防 HTML 注入，严禁直接 v-html 拼接日志内容。标记色经 CSS 变量（`--hl-bg`/`--hl-fg`）由 `style.css` 的 `.mark-0~4` 驱动，不要在组件里硬编码色值。
+- **颜色一律走 `style.css` token，双主题（夜巡 `:root` / 日间 `[data-theme='light']`）下严禁组件硬编码色值**。表面四级：`--bg`（页面）< `--bg-panel`（面板）< `--bg-elev`（组件）< `--bg-float`（浮层）——新增浮层（菜单/下拉）必须用 `--bg-float` + `--shadow-pop`；信号色板（`--lvl-N-fg/bg`、`.mark-N`）只在此处定义。
+- 主题状态在 `App.vue`（三态：auto/light/dark，localStorage `lh-theme` + matchMedia），启动预设在 `main.ts`（防闪色），勿在别处操作 `data-theme`。
 - 详情面板右键菜单（`ContextMenu.vue`）与格式标记槽位（`ContextPanel.vue` 内 5 槽）是纯前端状态，面板卸载即清；标记优先于查询高亮（重叠区间让位），该优先级在 `HighlightText.vue` 的区间裁剪逻辑里，改动保持。
 - 大结果集靠虚拟滚动 + 分段续载，任何列表改动不得破坏这一点。
 

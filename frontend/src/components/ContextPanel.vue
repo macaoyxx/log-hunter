@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { GetContext } from '../../wailsjs/go/main/App'
 import { logscan } from '../../wailsjs/go/models'
 import HighlightText from './HighlightText.vue'
+import ContextMenu from './ContextMenu.vue'
 
 const props = defineProps<{
   target: { fileId: number; offset: number }
@@ -75,6 +76,49 @@ function copyRow() {
 function copyAll() {
   copyText(rows.value.map(r => r.text).join('\n'), '全部 ')
 }
+
+// ---------- 右键格式标记 ----------
+// 5 个颜色槽位（标记1~5），每槽一组词；标记后详情内所有相同文本同步着色。
+// 面板期间保留（jump 换目标行、调前后行数不丢），关闭面板组件卸载即清空
+const MARK_SLOTS = 5
+const markSlots = ref<string[][]>(Array.from({ length: MARK_SLOTS }, () => []))
+const menu = ref<{ x: number; y: number; sel: string } | null>(null)
+
+// 扁平化标记词传给每行高亮组件
+const marks = computed(() =>
+  markSlots.value.flatMap((words, color) => words.map(word => ({ word, color })))
+)
+// 使用中的槽位序号（决定清除区列出哪些）
+const usedSlots = computed(() =>
+  markSlots.value.map((w, i) => (w.length ? i : -1)).filter(i => i >= 0)
+)
+
+// 详情区右键：无论有无选中都弹菜单（无选中时相关项置灰）
+function onCtx(e: MouseEvent) {
+  menu.value = { x: e.clientX, y: e.clientY, sel: (window.getSelection()?.toString() ?? '').trim() }
+}
+function copySel() {
+  if (menu.value?.sel) copyText(menu.value.sel, '选中')
+  menu.value = null
+}
+function applyMark(color: number) {
+  const w = menu.value?.sel
+  if (!w) return
+  // 同词换色：先从所有槽位移除，再入所选槽
+  for (let i = 0; i < MARK_SLOTS; i++) markSlots.value[i] = markSlots.value[i].filter(x => x !== w)
+  markSlots.value[color].push(w)
+  markSlots.value = [...markSlots.value]
+  menu.value = null
+}
+function clearSlot(color: number) {
+  markSlots.value[color] = []
+  markSlots.value = [...markSlots.value]
+  menu.value = null
+}
+function clearAllMarks() {
+  markSlots.value = Array.from({ length: MARK_SLOTS }, () => [])
+  menu.value = null
+}
 </script>
 
 <template>
@@ -95,7 +139,7 @@ function copyAll() {
         <button class="ghost" @click="emit('close')" title="关闭">✕</button>
       </div>
     </div>
-    <div class="body" ref="bodyEl">
+    <div class="body" ref="bodyEl" @contextmenu.prevent="onCtx($event)">
       <div v-if="loading" class="msg">正在读取…</div>
       <div v-else-if="error" class="msg err">{{ error }}</div>
       <div v-else-if="!rows.length" class="msg">这一行附近没有其他内容</div>
@@ -111,11 +155,16 @@ function copyAll() {
           <i v-if="r.level >= 0" class="lvl" :class="'lvl-' + r.level">{{ LEVEL_NAMES[r.level] }}</i>
         </span>
         <span class="c-text">
-          <HighlightText :text="r.text" :keywords="highlightKeywords" :regex="highlightRegex" />
+          <HighlightText :text="r.text" :keywords="highlightKeywords" :regex="highlightRegex" :marks="marks" />
         </span>
       </div>
     </div>
-    <div class="foot">提示：点击任意行可把视角移到那里；行内容为完整原文（左右滚动查看）</div>
+    <ContextMenu
+      v-if="menu" :x="menu.x" :y="menu.y" :sel-text="menu.sel" :used-slots="usedSlots"
+      @copy="copySel" @mark="applyMark" @clear-slot="clearSlot" @clear-all="clearAllMarks"
+      @close="menu = null"
+    />
+    <div class="foot">提示：点击任意行可把视角移到那里；选中文本右键可加格式标记；行内容为完整原文（左右滚动查看）</div>
   </div>
 </template>
 

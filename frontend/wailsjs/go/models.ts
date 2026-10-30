@@ -1,3 +1,54 @@
+export namespace appconf {
+	
+	export class HistItem {
+	    label: string;
+	    spec: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HistItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.spec = source["spec"];
+	    }
+	}
+	export class Conf {
+	    theme: string;
+	    history: HistItem[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Conf(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.theme = source["theme"];
+	        this.history = this.convertValues(source["history"], HistItem);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace logscan {
 	
 	export class ContextRow {
@@ -159,6 +210,22 @@ export namespace main {
 	        this.tsStart = source["tsStart"];
 	        this.tsEnd = source["tsEnd"];
 	        this.levels = source["levels"];
+	    }
+	}
+	export class UpdateInfo {
+	    latest: string;
+	    hasUpdate: boolean;
+	    err: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.latest = source["latest"];
+	        this.hasUpdate = source["hasUpdate"];
+	        this.err = source["err"];
 	    }
 	}
 

@@ -34,7 +34,7 @@ func main() {
 	// 1. 加载+索引
 	fmt.Println("== 加载并建索引 ==")
 	t0 := time.Now()
-	added, errs := s.AddFiles(context.Background(), []string{stdPath, jsonPath}, nil)
+	added, errs, _ := s.AddFiles(context.Background(), []string{stdPath, jsonPath}, nil)
 	if len(errs) > 0 {
 		fmt.Println("加载错误:", errs)
 		os.Exit(1)

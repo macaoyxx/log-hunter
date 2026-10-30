@@ -10,6 +10,10 @@ export function Cancel() {
   return window['go']['main']['App']['Cancel']();
 }
 
+export function CheckUpdate() {
+  return window['go']['main']['App']['CheckUpdate']();
+}
+
 export function ClearAll() {
   return window['go']['main']['App']['ClearAll']();
 }
@@ -18,12 +22,20 @@ export function ExportResults(arg1, arg2) {
   return window['go']['main']['App']['ExportResults'](arg1, arg2);
 }
 
+export function GetConfig() {
+  return window['go']['main']['App']['GetConfig']();
+}
+
 export function GetContext(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetContext'](arg1, arg2, arg3, arg4);
 }
 
 export function GetResults(arg1, arg2) {
   return window['go']['main']['App']['GetResults'](arg1, arg2);
+}
+
+export function GetVersion() {
+  return window['go']['main']['App']['GetVersion']();
 }
 
 export function ListFiles() {
@@ -44,6 +56,14 @@ export function RemoveFile(arg1) {
 
 export function SaveFileDialog(arg1, arg2) {
   return window['go']['main']['App']['SaveFileDialog'](arg1, arg2);
+}
+
+export function SaveHistory(arg1, arg2) {
+  return window['go']['main']['App']['SaveHistory'](arg1, arg2);
+}
+
+export function SetTheme(arg1) {
+  return window['go']['main']['App']['SetTheme'](arg1);
 }
 
 export function ValidateRegex(arg1) {

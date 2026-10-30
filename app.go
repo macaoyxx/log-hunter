@@ -2,23 +2,34 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"log-hunter/internal/appconf"
 	"log-hunter/internal/logscan"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App 应用结构：Wails 绑定层，包装 logscan.Session
+// App 应用结构：Wails 绑定层，包装 logscan.Session 与配置存储
 type App struct {
 	ctx     context.Context
 	session *logscan.Session
+	conf    *appconf.Store
 }
 
-// NewApp 创建应用实例
+// NewApp 创建应用实例；配置存储打开失败降级为内存态（不阻断启动）
 func NewApp() *App {
-	return &App{session: logscan.NewSession()}
+	conf, err := appconf.Open()
+	if err != nil {
+		conf = nil
+	}
+	return &App{session: logscan.NewSession(), conf: conf}
 }
 
 // startup Wails 生命周期：保存上下文
@@ -167,3 +178,96 @@ func (a *App) PickFiles() []string {
 
 // Cancel 取消进行中的加载或查询
 func (a *App) Cancel() { a.session.CancelAll() }
+
+// ---------- 版本 / 检查更新 / 配置持久化 ----------
+
+// GetVersion 当前版本（dev 构建返回 "dev"，发版产物为注入的 x.y.z）
+func (a *App) GetVersion() string { return version }
+
+// UpdateInfo 检查更新结果：Err 非空表示检查失败（网络等），此时其余字段无意义
+type UpdateInfo struct {
+	Latest    string `json:"latest"`
+	HasUpdate bool   `json:"hasUpdate"`
+	Err       string `json:"err"`
+}
+
+const releasesAPI = "https://api.github.com/repos/macaoyxx/log-hunter/releases/latest"
+
+// CheckUpdate 对比 GitHub 最新 Release 与当前版本
+func (a *App) CheckUpdate() UpdateInfo {
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, releasesAPI, nil)
+	if err != nil {
+		return UpdateInfo{Err: err.Error()}
+	}
+	req.Header.Set("User-Agent", "log-hunter") // GitHub API 要求带 UA
+	resp, err := client.Do(req)
+	if err != nil {
+		return UpdateInfo{Err: "网络请求失败：" + err.Error()}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return UpdateInfo{Err: "GitHub 返回 " + resp.Status}
+	}
+	var body struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return UpdateInfo{Err: "响应解析失败"}
+	}
+	latest := strings.TrimPrefix(body.TagName, "v")
+	if latest == "" {
+		return UpdateInfo{Err: "未找到发布版本"}
+	}
+	// dev 构建无法比较版本，只报最新版不判更新
+	if version == "dev" {
+		return UpdateInfo{Latest: latest}
+	}
+	return UpdateInfo{Latest: latest, HasUpdate: cmpVersion(latest, version) > 0}
+}
+
+// cmpVersion 语义化版本比较（a.b.c 数字逐段），返回 >0 表示 a 更新
+func cmpVersion(a, b string) int {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		x, y := 0, 0
+		if i < len(pa) {
+			x, _ = strconv.Atoi(pa[i])
+		}
+		if i < len(pb) {
+			y, _ = strconv.Atoi(pb[i])
+		}
+		if x != y {
+			if x > y {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+// store 配置存储（nil 时各方法静默降级为无持久化，不阻断功能）
+func (a *App) store() *appconf.Store { return a.conf }
+
+// GetConfig 读配置（主题 + 查询历史）
+func (a *App) GetConfig() appconf.Conf {
+	if s := a.store(); s != nil {
+		return s.Get()
+	}
+	return appconf.Conf{}
+}
+
+// SetTheme 持久化主题偏好
+func (a *App) SetTheme(theme string) {
+	if s := a.store(); s != nil {
+		_ = s.SetTheme(theme)
+	}
+}
+
+// SaveHistory 保存一条查询历史（同标签去重置顶，上限 20）
+func (a *App) SaveHistory(label, specJSON string) {
+	if s := a.store(); s != nil {
+		_ = s.PushHistory(label, specJSON)
+	}
+}

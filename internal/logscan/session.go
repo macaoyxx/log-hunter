@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -296,6 +297,10 @@ func (s *Session) ClearAll() {
 	}
 	s.results = nil
 	s.stats = QueryStats{}
+	// 引用已全部释放，但 Go GC 惰性（等堆增长才触发）且归还 OS 渐进保守，
+	// 任务管理器内存不会立刻回落——清空是低频操作，强制 GC 并归还空闲页，
+	// 让"零残留"在进程内存上也立即可见
+	debug.FreeOSMemory()
 }
 
 // RunQuery 执行查询：时间/级别条件先经内存索引筛出候选行，再对候选（或全文件）做文本匹配；

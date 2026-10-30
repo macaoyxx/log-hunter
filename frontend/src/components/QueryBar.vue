@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { ValidateRegex } from '../../wailsjs/go/main/App'
+import { computed, onMounted, ref, watch } from 'vue'
+import { ValidateRegex, GetConfig, SaveHistory } from '../../wailsjs/go/main/App'
 import { main, logscan } from '../../wailsjs/go/models'
 import TimePicker from './TimePicker.vue'
 
@@ -124,12 +124,26 @@ function pickTpl(re: string) {
   showAdvanced.value = true
 }
 
-// ---- 查询历史（会话内保留，一键重跑） ----
+// ---- 查询历史（config.json 持久化，重启保留；一键重跑） ----
 const HISTORY_MAX = 20
 interface HistItem { label: string; spec: main.QuerySpecJSON }
 const history = ref<HistItem[]>([])
 const showHist = ref(false)
 const histRoot = ref<HTMLElement | null>(null)
+
+// 挂载时从持久化配置载入历史（spec 为 JSON 字符串，反序列化重跑用；坏条目跳过）
+onMounted(async () => {
+  try {
+    const cfg = await GetConfig()
+    history.value = (cfg.history ?? []).flatMap(h => {
+      try {
+        return [{ label: h.label, spec: JSON.parse(h.spec) as main.QuerySpecJSON }]
+      } catch {
+        return []
+      }
+    })
+  } catch { /* 配置读取失败退化为会话内历史，不阻断 */ }
+})
 
 function histLabel(spec: main.QuerySpecJSON): string {
   const parts: string[] = []
@@ -222,9 +236,10 @@ function buildSpec(): main.QuerySpecJSON {
 function search() {
   if (props.querying || regexErr.value) return
   const spec = buildSpec()
-  // 记录历史（去重、置顶）
+  // 记录历史（去重、置顶）并持久化到 config.json（失败不阻断查询）
   const label = histLabel(spec)
   history.value = [{ label, spec }, ...history.value.filter(h => h.label !== label)].slice(0, HISTORY_MAX)
+  SaveHistory(label, JSON.stringify(spec)).catch(() => {})
   emit('search', spec)
 }
 

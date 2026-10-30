@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff } from '../wailsjs/runtime/runtime'
+import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff, BrowserOpenURL } from '../wailsjs/runtime/runtime'
 import {
   AddFiles, ClearAll, ListFiles, Query, Cancel, RemoveFile,
+  GetVersion, CheckUpdate, GetConfig, SetTheme,
 } from '../wailsjs/go/main/App'
 import { logscan, main } from '../wailsjs/go/models'
 import FileBar from './components/FileBar.vue'
+import appicon from './assets/appicon.png'
 import QueryBar from './components/QueryBar.vue'
 import ResultTable from './components/ResultTable.vue'
 import ContextPanel from './components/ContextPanel.vue'
@@ -31,7 +33,7 @@ const ctxTarget = ref<{ fileId: number; offset: number } | null>(null)
 
 const queryBarRef = ref<InstanceType<typeof QueryBar> | null>(null)
 
-// ---------- 昼夜主题（默认 auto 跟随系统，选择持久化） ----------
+// ---------- 昼夜主题（默认 auto 跟随系统；config.json 为权威持久化，localStorage 作第一道防闪与迁移源） ----------
 type ThemePref = 'auto' | 'light' | 'dark'
 const themePref = ref<ThemePref>((localStorage.getItem('lh-theme') as ThemePref) || 'auto')
 const THEME_ICONS: Record<ThemePref, string> = { auto: '🌗', light: '☀️', dark: '🌙' }
@@ -52,10 +54,43 @@ function cycleTheme() {
   const order: ThemePref[] = ['auto', 'light', 'dark']
   themePref.value = order[(order.indexOf(themePref.value) + 1) % order.length]
   localStorage.setItem('lh-theme', themePref.value)
+  SetTheme(themePref.value) // 文件级持久化（config.json）
   applyTheme()
 }
 function onSystemThemeChange() {
   if (themePref.value === 'auto') applyTheme()
+}
+
+// ---------- 头部菜单：检查更新 / 关于 ----------
+const appVersion = ref('')
+const menuOpen = ref(false)
+const menuRoot = ref<HTMLElement | null>(null)
+const aboutOpen = ref(false)
+// 检查更新状态：null 未检查 | 'checking' | 结果文案（link 非空可打开发布页）
+const updateMsg = ref<{ text: string; link?: string } | null | 'checking'>(null)
+
+function doCheckUpdate() {
+  if (updateMsg.value === 'checking') return // 检查中防重复触发（后发先至会覆盖结果）
+  updateMsg.value = 'checking'
+  CheckUpdate().then(u => {
+    if (u.err) {
+      updateMsg.value = { text: '检查失败：' + u.err }
+    } else if (u.hasUpdate) {
+      updateMsg.value = { text: `发现新版本 v${u.latest}，点击打开发布页`, link: 'https://github.com/macaoyxx/log-hunter/releases/latest' }
+    } else if (appVersion.value === 'dev') {
+      updateMsg.value = { text: `当前开发版，最新发布 v${u.latest}` }
+    } else {
+      updateMsg.value = { text: `已是最新 v${u.latest}` }
+    }
+  }).catch(e => { updateMsg.value = { text: '检查失败：' + e } })
+}
+function openUpdateLink() {
+  if (updateMsg.value && updateMsg.value !== 'checking' && updateMsg.value.link) {
+    BrowserOpenURL(updateMsg.value.link)
+  }
+}
+function openRepo() {
+  BrowserOpenURL('https://github.com/macaoyxx/log-hunter')
 }
 
 const fileNameMap = computed(() => {
@@ -84,8 +119,36 @@ onMounted(() => {
     if (paths && paths.length > 0) addFiles(paths)
   }, false)
   themeMedia.addEventListener('change', onSystemThemeChange)
+  // 菜单浮层：点外部关闭
+  document.addEventListener('click', onMenuOutside)
   refreshFiles()
+  // 版本号 + 主题持久化校正（config.json 权威；localStorage 先行防闪）
+  GetVersion().then(v => { appVersion.value = v }).catch(() => {})
+  GetConfig().then(cfg => {
+    if (cfg.theme === 'auto' || cfg.theme === 'light' || cfg.theme === 'dark') {
+      if (cfg.theme !== themePref.value) {
+        themePref.value = cfg.theme
+        localStorage.setItem('lh-theme', cfg.theme)
+        applyTheme()
+      }
+    } else {
+      SetTheme(themePref.value) // 首次：localStorage 旧值迁移入库
+    }
+  }).catch(() => { /* 配置读取失败维持 localStorage 现值，不阻断 */ })
 })
+onUnmounted(() => {
+  EventsOff('files:progress')
+  EventsOff('query:progress')
+  OnFileDropOff()
+  themeMedia.removeEventListener('change', onSystemThemeChange)
+  document.removeEventListener('click', onMenuOutside)
+})
+function onMenuOutside(e: MouseEvent) {
+  if (menuOpen.value && menuRoot.value && !menuRoot.value.contains(e.target as Node)) {
+    menuOpen.value = false
+    updateMsg.value = null
+  }
+}
 onUnmounted(() => {
   EventsOff('files:progress')
   EventsOff('query:progress')
@@ -199,8 +262,33 @@ function openContext(fileId: number, offset: number) {
       <span class="logo">▮</span>
       <span class="name">LogHunter</span>
       <span class="tag">本地日志排查 · 拖进来就查</span>
-      <button class="theme-btn" :title="THEME_TITLES[themePref]" @click="cycleTheme">{{ THEME_ICONS[themePref] }}</button>
+      <div ref="menuRoot" class="brand-ctrl">
+        <button class="theme-btn" :title="THEME_TITLES[themePref]" @click="cycleTheme">{{ THEME_ICONS[themePref] }}</button>
+        <button class="theme-btn" title="菜单" @click.stop="menuOpen = !menuOpen; updateMsg = null">≡</button>
+        <div v-if="menuOpen" class="appmenu">
+          <button class="mi" @click="doCheckUpdate">⟳ 检查更新</button>
+          <button class="mi" @click="menuOpen = false; aboutOpen = true">ⓘ 关于</button>
+          <div v-if="updateMsg === 'checking'" class="upd-msg">正在检查…</div>
+          <div
+            v-else-if="updateMsg" class="upd-msg" :class="{ link: updateMsg.link }"
+            :title="updateMsg.link ? '打开发布页' : ''"
+            @click="openUpdateLink"
+          >{{ updateMsg.text }}</div>
+        </div>
+      </div>
     </header>
+
+    <!-- 关于弹窗 -->
+    <div v-if="aboutOpen" class="about-mask" @click.self="aboutOpen = false">
+      <div class="about">
+        <img class="about-icon" :src="appicon" alt="LogHunter" />
+        <div class="about-name">LogHunter</div>
+        <div class="about-ver">v{{ appVersion }}</div>
+        <div class="about-desc">本地大日志快速排查 · 拖进来就查</div>
+        <div class="about-link" title="打开仓库页" @click="openRepo">github.com/macaoyxx/log-hunter</div>
+        <button class="ghost" @click="aboutOpen = false">关闭</button>
+      </div>
+    </div>
 
     <FileBar
       :files="files" :selected="selected" :loading="loadingFiles" :progress="fileProg"
@@ -252,9 +340,14 @@ function openContext(fileId: number, offset: number) {
   letter-spacing: .04em;
 }
 .tag { color: var(--text-faint); font-size: 12px; }
-.theme-btn {
+.brand-ctrl {
   margin-left: auto;
-  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: relative;
+}
+.theme-btn {
   background: transparent;
   border: none;
   font-size: 15px;
@@ -262,6 +355,84 @@ function openContext(fileId: number, offset: number) {
   padding: 4px 6px;
 }
 .theme-btn:hover { background: var(--bg-hover); border: none; }
+.appmenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 150;
+  min-width: 210px;
+  padding: 5px;
+  background: var(--bg-float);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  font-size: 12px;
+  color: var(--text);
+  user-select: none;
+}
+.mi {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.mi:hover { background: var(--bg-float-hover); }
+.upd-msg {
+  padding: 6px 10px 4px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+.upd-msg.link { color: var(--amber); cursor: pointer; }
+
+/* 关于弹窗 */
+.about-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, .45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.about {
+  width: 300px;
+  padding: 26px 24px 18px;
+  background: var(--bg-float);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+.about-icon { width: 52px; height: 52px; border-radius: 12px; }
+.about-name { font-family: var(--mono); font-weight: 700; font-size: 17px; }
+.about-ver { color: var(--amber); font-family: var(--mono); font-size: 12.5px; }
+.about-desc { color: var(--text-dim); font-size: 12px; }
+.about-link {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-family: var(--mono);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.about-link:hover { color: var(--amber); background: var(--bg-hover); }
+.about button { margin-top: 12px; }
 .notice-bar {
   flex: none;
   display: flex;

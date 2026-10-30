@@ -71,7 +71,10 @@ frontend/src/              Vue 3 界面
 ├── HighlightText.vue      分段高亮组件（防 HTML 注入）
 └── TimePicker.vue         自绘日期时间选择器
 cmd/logscan-bench/         性能验收基准（生成 1GB 混合日志并计时）
+tools/packzip/             跨平台 zip 压缩工具（发版脚本用，Go 标准库）
 tools/genicon/             应用图标生成（SDF 绘制 → PNG/ICO）
+internal/appconf/          配置持久化（exe 同级 data/config.json：主题 + 查询历史）
+scripts/                   发版脚本（bash）：package.sh 打包 / publish.sh 确认后发布
 ```
 
 设计要点（为什么快）：

@@ -20,11 +20,14 @@ cd frontend && npm run build # 前端类型检查（vue-tsc --noEmit）+ 构建
 ```
 internal/logscan/   核心引擎 —— 纯库，严禁 import Wails 或任何 UI 依赖
 ├── unzip.go        zip 解压（内容级二进制校验、临时目录生命周期）
+internal/appconf/   应用配置持久化 —— 纯库：data/config.json（主题+查询历史），不含 UI
 app.go              Wails 绑定层：包装 logscan.Session，进度事件、系统对话框
 main.go             Wails 入口（窗口/拖拽/主题配置）
 frontend/src/       Vue 3 界面（手写组件，无 UI 框架/无 router/无状态管理库）
 cmd/logscan-bench/  性能验收基准
-tools/genicon/      图标生成
+tools/              辅助工具（纯 Go，不进产物）：genicon 图标生成 / packzip 跨平台压缩（发版脚本用）
+scripts/            发版脚本（bash 跨平台）：package.sh 仅本地打包 / publish.sh 带确认门发布
+docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AGENTS.md 迭代文档规范）
 ```
 
 - 引擎层（logscan）↔ 绑定层（app.go）↔ 前端的依赖只能单向向前。进度回调用函数参数传入（`func(p logscan.XxxProgress)`），由 app.go 转成 Wails 事件，引擎本身不感知事件。

@@ -90,7 +90,8 @@ wails dev                # 开发模式（热更新）
 go test ./internal/...   # 核心包单测
 go run ./cmd/logscan-bench -size 1024   # 性能基准（生成 1GB 日志并计时）
 go run ./tools/genicon   # 重新生成应用图标（build/appicon.png + icon.ico）
-./release.ps1 -Version 0.0.1 # 发版打包（release/<版本>/ 下产出 zip，临时文件自动清理）
+./scripts/package.sh 0.0.3   # 仅本地打包（release/<版本>/ 下产出 zip，临时文件自动清理）
+./scripts/publish.sh 0.0.3   # 发布：先本地打包，确认后推 tag + GitHub Release（需 gh CLI，未装则给手动上传指引）
 ```
 
 ## 已知限制
@@ -101,3 +102,11 @@ go run ./tools/genicon   # 重新生成应用图标（build/appicon.png + icon.i
 - 无时间戳的行（多行堆栈）不参与时间范围过滤（附属于上一条日志）；级别过滤同样只作用于有级别的行
 - 结果上限 200 万条（防误用过宽条件耗尽内存，超限截断并提示）
 - Windows 图标有系统缓存：换图标后若桌面快捷方式仍显示旧图，重建快捷方式或重启资源管理器
+
+## 记忆目录 (.memory/)
+
+存放跨会话复用的踩坑知识，新会话/新协作者优先读这里。
+
+| 文档 | 内容 |
+|---|---|
+| [Wails 拖放陷阱](.memory/wails-dragdrop.md) | 文件拖放必须走 OnFileDrop 注册（preventDefault + Windows 桥接都挂在其内部），EventsOn 直听永远收不到 |

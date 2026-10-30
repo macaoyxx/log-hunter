@@ -31,12 +31,13 @@ mkdir -p "$dir"
 exe="$dir/$bin_name"
 cp "build/bin/$bin_name" "$exe"
 
-# 4. 压缩为最终产物（优先 zip 命令；Windows Git Bash 常无 zip，回退 PowerShell）
+# 4. 压缩为最终产物：go run 标准库压缩（全平台一致——zip 命令非标配，
+#    powershell 仅 Windows，Go 构建机必有）+ 落盘校验兜底
 zip_path="$dir/log-hunter-v$Version-$plat.zip"
-if command -v zip >/dev/null 2>&1; then
-  zip -j -q "$zip_path" "$exe"
-else
-  powershell -NoProfile -Command "Compress-Archive -Path '$exe' -DestinationPath '$(echo "$zip_path" | sed 's|/|\\|g')' -Force"
+go run ./tools/packzip "$zip_path" "$exe"
+if [[ ! -f "$zip_path" ]]; then
+  echo "压缩失败：$zip_path 未生成" >&2
+  exit 1
 fi
 
 # 5. 删除临时文件，目录内只留 zip

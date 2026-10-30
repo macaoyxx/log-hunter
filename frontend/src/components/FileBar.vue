@@ -87,6 +87,7 @@ const totalSize = computed(() => props.files.reduce((s, f) => s + f.size, 0))
           <span class="prog-pct">{{ progPct.toFixed(0) }}%</span>
         </div>
         <div v-else class="sum">共 {{ fmtSize(totalSize) }} · 可继续拖入追加</div>
+        <button class="ghost" @click="pickFiles" title="从电脑选择文件追加">＋ 添加文件</button>
         <button class="danger" @click="emit('clear')" title="移除全部文件并释放内存">清空重来</button>
       </div>
       <div class="chips">

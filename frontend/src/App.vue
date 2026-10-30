@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
+import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff } from '../wailsjs/runtime/runtime'
 import {
   AddFiles, ClearAll, ListFiles, Query, Cancel, RemoveFile,
 } from '../wailsjs/go/main/App'
@@ -46,20 +46,22 @@ function onFileProgress(p: any) {
 function onQueryProgress(p: any) {
   queryProg.value = { scanned: p.scanned, total: p.total, matched: p.matched ?? 0 }
 }
-function onFileDrop(_x: number, _y: number, paths: string[] | null) {
-  if (paths && paths.length > 0) addFiles(paths)
-}
 
 onMounted(() => {
   EventsOn('files:progress', onFileProgress)
   EventsOn('query:progress', onQueryProgress)
-  EventsOn('wails:file-drop', onFileDrop)
+  // 拖放必须经 OnFileDrop 正规注册：其内部才会挂 dragover/drop 监听（preventDefault
+  // 允许放下）并接通 Windows 的文件路径桥接；此前直接 EventsOn('wails:file-drop')
+  // 事件链从未接通，拖拽从未生效。useDropTarget=false：窗口任意位置都可放
+  OnFileDrop((_x, _y, paths) => {
+    if (paths && paths.length > 0) addFiles(paths)
+  }, false)
   refreshFiles()
 })
 onUnmounted(() => {
   EventsOff('files:progress')
   EventsOff('query:progress')
-  EventsOff('wails:file-drop')
+  OnFileDropOff()
 })
 
 // ---------- 文件管理 ----------

@@ -7,11 +7,13 @@
 ```bash
 wails dev                    # 开发模式（热更新）
 wails build                  # 产出 build/bin/log-hunter.exe
-go test ./internal/...       # 核心引擎单测（全部集中在 internal/logscan/logscan_test.go）
+go test ./internal/...       # 单测（logscan 引擎 + appconf 配置）
 go run ./cmd/logscan-bench -size 1024   # 性能基准（生成 1GB 日志并计时）
 go run ./tools/genicon       # 重新生成应用图标（build/appicon.png + icon.ico）
 cd frontend && npm run build # 前端类型检查（vue-tsc --noEmit）+ 构建
 ```
+
+新迭代开始时：切分支 `v<版本号>`、建迭代文档、并 bump `main.go` 的 `var version = "<版本号>-dev"`（发版由 release 脚本 ldflags 覆盖为正式号）。
 
 前置：Go 1.25+、Node 18+、Wails CLI（`go install github.com/wailsapp/wails/v2/cmd/wails@latest`）。
 
@@ -31,7 +33,8 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 ```
 
 - 引擎层（logscan）↔ 绑定层（app.go）↔ 前端的依赖只能单向向前。进度回调用函数参数传入（`func(p logscan.XxxProgress)`），由 app.go 转成 Wails 事件，引擎本身不感知事件。
-- 前端经 `frontend/wailsjs/go/main/App` 调后端（`wails dev`/`build` 自动重新生成绑定）；事件监听 `files:progress` / `query:progress` / `wails:file-drop`，卸载时 `EventsOff`。
+- 前端经 `frontend/wailsjs/go/main/App` 调后端（`wails dev`/`build` 自动重新生成绑定）；**生成绑定一律返回 Promise（含单值返回），前端一律 .then/await**，fire-and-forget 调用记得 `.catch(() => {})`。事件监听 `files:progress` / `query:progress`，卸载时 `EventsOff`。
+- **文件拖放必须走 `OnFileDrop(cb, false)` 注册**（App.vue），直接 `EventsOn('wails:file-drop')` 链路不通（曾坏两个版本），机制详见 `.memory/wails-dragdrop.md`。
 
 ## 改核心引擎前必读的设计约束
 
@@ -58,7 +61,9 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 ## 其他
 
 - 远端仓库 `https://github.com/macaoyxx/log-hunter`（main 分支）；`build/bin`、`frontend/dist`、`node_modules`、`release/` 已在 `.gitignore`。
-- **发版**走 `scripts/`（bash，跨平台）：`scripts/package.sh <x.y.z>` 仅本地打包（构建 ldflags 注入版本 → `release/<版本>/` 只留 zip）；`scripts/publish.sh <x.y.z>` 先打包再发布（推 tag + gh release create）。产物不进 git。
-- **发布确认铁律（写死，不可绕过）**：任何发布动作（push tag / gh release create）前必须由用户在终端显式输入 yes 确认——publish.sh 内置确认门是流程的一部分，不得移除、不得新增跳过参数；**AI 也不得代替用户确认或绕过该门执行发布**。
+- **发版脚本**（bash 跨平台，产物不进 git）：`scripts/package.sh <x.y.z>` 仅本地打包（ldflags 注入版本，Go 标准库压缩，`release/<版本>/` 只留 zip）；`scripts/publish.sh <x.y.z>` 先打包再发布，内置终端确认门（仅用户亲自跑脚本时生效，AI 代跑不得代答）。
+- **发布铁律（用户定版）**：发布必须以**用户的显式发布指令**为前提（对话中说「发布/发版」即为确认，AI 据此执行全程）；**无指令绝不得自行发布**。发版流程固定：迭代收尾 → 合并 main（ff-only）→ push main → **基于 main 打 tag**（`git push origin refs/tags/vX.Y.Z`，防 tag/分支同名歧义）→ gh release create（产物 zip）→ **切回开发迭代分支**。
+- gh CLI 已装（`C:\Program Files\GitHub CLI`，Git Bash 需 `export PATH` 追加）并登录 macaoyxx。
+- **GitHub 直连间歇抖动**：git push / gh 命令偶发 connection reset，重试即可，勿当成配置问题。
 - `frontend/package.json.md5` 是 Wails 的依赖指纹缓存，勿手工编辑。
 - 换应用图标后 Windows 有系统缓存，旧图残留需重建快捷方式或重启资源管理器。

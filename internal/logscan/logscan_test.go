@@ -408,6 +408,42 @@ func TestCapLine(t *testing.T) {
 	}
 }
 
+// TestRunQueryBrowseAll 无条件查询 = 浏览全部行：含无时间戳的堆栈行；
+// 多文件按加入顺序拼接、各文件内行号升序
+func TestRunQueryBrowseAll(t *testing.T) {
+	s := NewSession()
+	defer s.ClearAll()
+	// 双文件：stdLog（6 行）+ 单行文件
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, stdLog), writeTemp(t, "2024-01-15 10:23:48.000 WARN [x] tail\n")}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if len(added) != 2 {
+		t.Fatalf("应加载 2 个文件: %d", len(added))
+	}
+	stats, err := s.RunQuery(context.Background(), &QuerySpec{
+		FileIDs: []int64{added[0].ID, added[1].ID}, // 条件全空 = 浏览全部
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Total != 7 {
+		t.Fatalf("全览应 7 条（6+1）: %d", stats.Total)
+	}
+	// 顺序：文件 1 的 6 行在前（含 2 行无时间戳堆栈），文件 2 的 1 行在后
+	rows := s.GetResults(0, 10)
+	if rows[0].LineNo != 1 || rows[0].FileID != added[0].ID {
+		t.Fatalf("首行应为文件 1 第 1 行: %+v", rows[0])
+	}
+	if rows[3].TS != 0 || rows[4].TS != 0 {
+		t.Fatal("堆栈行（无时间戳）也应出现在全览中")
+	}
+	if rows[6].LineNo != 1 || rows[6].FileID != added[1].ID {
+		t.Fatalf("末行应为文件 2 第 1 行: %+v", rows[6])
+	}
+}
+
 // gbkTestName 把中文名转为 GBK 字节串：模拟老 Windows 打包工具写入的非 UTF-8 文件名
 func gbkTestName(t *testing.T, s string) string {
 	t.Helper()

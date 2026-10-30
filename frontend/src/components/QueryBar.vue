@@ -72,23 +72,23 @@ function toNs(local: string): number {
   return new Date(local).getTime() * 1e6
 }
 
-// 筛选链：当前生效条件的胶囊视图，可逐个移除后立即重查
+// 筛选链：当前生效条件的胶囊视图，可逐个移除后立即重查（删光 = 回到浏览全部）
 const chain = computed(() => {
-  const items: { key: string; label: string; kind: string; removable: boolean }[] = []
+  const items: { key: string; label: string; kind: string }[] = []
   for (const k of keywordList.value) {
-    items.push({ key: 'kw:' + k, label: k, kind: keywordAnd.value ? '都要含' : '任一含', removable: itemCanRemove('kw') })
+    items.push({ key: 'kw:' + k, label: k, kind: keywordAnd.value ? '都要含' : '任一含' })
   }
   for (const k of excludeList.value) {
-    items.push({ key: 'ex:' + k, label: '排除 ' + k, kind: '', removable: itemCanRemove('ex') })
+    items.push({ key: 'ex:' + k, label: '排除 ' + k, kind: '' })
   }
   if (regex.value.trim()) {
-    items.push({ key: 're', label: '正则 ' + regex.value.trim(), kind: '', removable: itemCanRemove('re') })
+    items.push({ key: 're', label: '正则 ' + regex.value.trim(), kind: '' })
   }
   if (tsStart.value || tsEnd.value) {
-    items.push({ key: 'ts', label: `时间 ${tsStart.value.replace('T', ' ') || '…'} ~ ${tsEnd.value.replace('T', ' ') || '…'}`, kind: '', removable: itemCanRemove('ts') })
+    items.push({ key: 'ts', label: `时间 ${tsStart.value.replace('T', ' ') || '…'} ~ ${tsEnd.value.replace('T', ' ') || '…'}`, kind: '' })
   }
   for (const l of levels.value) {
-    items.push({ key: 'lv:' + l, label: LEVELS[l], kind: '级别', removable: itemCanRemove('lv') })
+    items.push({ key: 'lv:' + l, label: LEVELS[l], kind: '级别' })
   }
   return items
 })
@@ -143,7 +143,7 @@ function histLabel(spec: main.QuerySpecJSON): string {
 
 function runHist(h: HistItem) {
   showHist.value = false
-  // 恢复条件到输入态
+  // 恢复条件到输入态（含「(无条件)」浏览全部的历史）
   keywords.value = (h.spec.keywords ?? []).join(' ')
   excludes.value = (h.spec.excludes ?? []).join(' ')
   regex.value = h.spec.regex ?? ''
@@ -152,7 +152,7 @@ function runHist(h: HistItem) {
   tsEnd.value = h.spec.tsEnd ?? ''
   levels.value = new Set(h.spec.levels ?? [])
   showAdvanced.value = true
-  if (hasCond.value) emit('search', h.spec)
+  emit('search', h.spec)
 }
 
 if (typeof document !== 'undefined') {
@@ -186,17 +186,7 @@ function quickRange(minutes: number | 'today') {
   showAdvanced.value = true
 }
 
-// 只剩最后一类条件时不允许移除（否则变成无条件查询）
-function itemCanRemove(kind: string): boolean {
-  const kinds = new Set<string>()
-  if (keywordList.value.length) kinds.add('kw')
-  if (excludeList.value.length) kinds.add('ex')
-  if (regex.value.trim()) kinds.add('re')
-  if (tsStart.value || tsEnd.value) kinds.add('ts')
-  if (levels.value.size) kinds.add('lv')
-  return kinds.size > 1
-}
-
+// 移除一个条件胶囊并立即重查（全部删光 = 回到浏览全部）
 function removeChip(key: string) {
   const [kind, ...rest] = key.split(':')
   const val = rest.join(':')
@@ -214,12 +204,8 @@ function removeChip(key: string) {
   } else if (kind === 'lv') {
     toggleLevel(Number(val))
   }
-  if (hasCond.value) search()
+  search()
 }
-
-const hasCond = computed(() =>
-  keywords.value.trim() !== '' || excludes.value.trim() !== '' || regex.value.trim() !== '' ||
-  tsStart.value !== '' || tsEnd.value !== '' || levels.value.size > 0)
 
 function buildSpec(): main.QuerySpecJSON {
   const spec = new main.QuerySpecJSON()
@@ -234,7 +220,7 @@ function buildSpec(): main.QuerySpecJSON {
 }
 
 function search() {
-  if (props.querying || !hasCond.value || regexErr.value) return
+  if (props.querying || regexErr.value) return
   const spec = buildSpec()
   // 记录历史（去重、置顶）
   const label = histLabel(spec)
@@ -259,7 +245,7 @@ function addLevelAndSearch(lv: number) {
   s.add(lv)
   levels.value = s
   showAdvanced.value = true
-  if (hasCond.value) search()
+  search()
 }
 defineExpose({ reset, addLevelAndSearch })
 
@@ -287,11 +273,11 @@ const progPct = computed(() => {
       </div>
       <input
         class="q-input" type="text" v-model="keywords"
-        placeholder="想找什么？输入关键字，多个用空格隔开（如：E502 超时）"
+        placeholder="想找什么？留空看全部，多个关键字空格隔开（如：E502 超时）"
         :disabled="disabled"
         @keydown="onKey"
       />
-      <button v-if="!querying" class="primary" :disabled="disabled || !hasCond || !!regexErr" @click="search">
+      <button v-if="!querying" class="primary" :disabled="disabled || !!regexErr" @click="search">
         查一下
       </button>
       <button v-else class="stop" @click="emit('cancel')">停止</button>
@@ -354,14 +340,13 @@ const progPct = computed(() => {
       <div v-if="regexErr" class="re-err">正则写法有误：{{ regexErr }}</div>
     </div>
 
-    <!-- 签名交互：筛选链 —— 生效条件一目了然，点 × 移除并立即重查 -->
+    <!-- 签名交互：筛选链 —— 生效条件一目了然，点 × 移除并立即重查（删光回到全部） -->
     <div v-if="chain.length" class="chain">
       <span class="chain-label">缩小到</span>
-      <span v-for="c in chain" :key="c.key" class="chain-chip" :class="{ locked: !c.removable }">
+      <span v-for="c in chain" :key="c.key" class="chain-chip">
         <span v-if="c.kind" class="chain-kind">{{ c.kind }}</span>
         <span class="chain-text" :title="c.label">{{ c.label }}</span>
-        <button v-if="c.removable" class="chain-x" @click="removeChip(c.key)" title="移除这个条件并重新查询">×</button>
-        <span v-else class="chain-lock" title="至少保留一个条件">🔒</span>
+        <button class="chain-x" @click="removeChip(c.key)" title="移除这个条件并重新查询">×</button>
       </span>
     </div>
 
@@ -481,16 +466,13 @@ const progPct = computed(() => {
   font-size: 12px;
   max-width: 300px;
 }
-.chain-chip.locked { border-color: var(--border-strong); background: var(--bg-elev); }
 .chain-kind { color: var(--amber); font-size: 11px; flex: none; }
-.chain-chip.locked .chain-kind { color: var(--text-dim); }
 .chain-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; }
 .chain-x {
   border: none; background: transparent; color: var(--text-dim);
   font-size: 14px; padding: 0 6px 0 2px; border-radius: 10px;
 }
 .chain-x:hover { color: var(--danger); background: transparent; }
-.chain-lock { font-size: 10px; padding-right: 5px; opacity: .6; }
 
 .qprog { display: flex; align-items: center; gap: 10px; }
 .qprog-bar { flex: 1; height: 6px; background: var(--bg-panel); border-radius: 3px; overflow: hidden; }

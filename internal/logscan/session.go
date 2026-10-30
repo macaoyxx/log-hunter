@@ -375,13 +375,31 @@ func (s *Session) RunQuery(ctx context.Context, spec *QuerySpec, onProgress func
 			}
 		}
 
-		if matcher.empty() && !hasTimeCond && !hasLevelCond {
-			continue // 无任何条件：不出结果（前端应阻止）
-		}
-
 		if matcher.empty() {
-			// 纯时间/级别条件：直接由索引产出候选行，预览延迟到结果窗口生成
-			for _, li := range e.idx.filterCandidates(spec.TSStart, spec.TSEnd, levels) {
+			// 无文本条件：索引直出，预览延迟到结果窗口生成。
+			// 无时间/级别条件 = 浏览全部行（filterCandidates(0,0,nil) 返回 nil 哨兵），
+			// 两种来源统一为行下标迭代器，全览保持惰性不建候选切片；
+			// 多文件按加入顺序拼接由外层循环保证
+			var cands []int32
+			if hasTimeCond || hasLevelCond {
+				cands = e.idx.filterCandidates(spec.TSStart, spec.TSEnd, levels)
+			}
+			lines := func(yield func(int32) bool) {
+				if cands == nil {
+					for i := 0; i < e.idx.LineCount(); i++ {
+						if !yield(int32(i)) {
+							return
+						}
+					}
+					return
+				}
+				for _, li := range cands {
+					if !yield(li) {
+						return
+					}
+				}
+			}
+			for li := range lines {
 				if int(len(results)) >= maxResults {
 					truncated = true
 					break

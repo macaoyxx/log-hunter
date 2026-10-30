@@ -70,6 +70,7 @@ async function refreshFiles() {
 }
 
 async function addFiles(paths: string[]) {
+  const wasEmpty = files.value.length === 0
   loadingFiles.value = true
   fileProg.value = null
   try {
@@ -87,6 +88,8 @@ async function addFiles(paths: string[]) {
     loadingFiles.value = false
     fileProg.value = null
   }
+  // 首次加载：自动浏览全部，拖进来即见日志；追加文件不自动（不覆盖已输入条件的结果）
+  if (wasEmpty && files.value.length > 0) doQuery(new main.QuerySpecJSON())
 }
 
 async function removeFile(id: number) {

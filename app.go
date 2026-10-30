@@ -81,14 +81,10 @@ func parseLocalTime(s string) (int64, error) {
 	return 0, fmt.Errorf("无法解析时间: %q", s)
 }
 
-// Query 执行查询，进度经 "query:progress" 事件推送
+// Query 执行查询（条件全空 = 浏览全部行），进度经 "query:progress" 事件推送
 func (a *App) Query(spec *QuerySpecJSON) (*logscan.QueryStats, error) {
 	if spec == nil || len(spec.FileIDs) == 0 {
 		return nil, fmt.Errorf("请先选择要查询的文件")
-	}
-	if len(spec.Keywords) == 0 && len(spec.Excludes) == 0 && spec.Regex == "" &&
-		spec.TSStart == "" && spec.TSEnd == "" && len(spec.Levels) == 0 {
-		return nil, fmt.Errorf("请至少输入一个查询条件")
 	}
 	start, err := parseLocalTime(spec.TSStart)
 	if err != nil {

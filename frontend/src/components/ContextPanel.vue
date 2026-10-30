@@ -18,8 +18,8 @@ const emit = defineEmits<{
 }>()
 
 const rows = ref<logscan.ContextRow[]>([])
-const before = ref(30)
-const after = ref(30)
+const before = ref(100)
+const after = ref(100)
 const loading = ref(false)
 const error = ref('')
 const copied = ref('')

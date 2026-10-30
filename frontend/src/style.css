@@ -1,0 +1,101 @@
+/* LogHunter — 狩猎观测台设计系统
+   底色碳黑偏蓝 / 琥珀信号色 / 等宽数据字体
+   token 一次定义，组件全部从这里取值 */
+:root {
+  --bg: #0f1115;
+  --bg-panel: #161a22;
+  --bg-elev: #1c212c;
+  --bg-hover: #202634;
+  --border: #242a36;
+  --border-strong: #333c4e;
+  --text: #e2e6ef;
+  --text-dim: #7c8698;
+  --text-faint: #555e70;
+  --amber: #f5a524;
+  --amber-soft: rgba(245, 165, 36, .12);
+  --amber-line: rgba(245, 165, 36, .45);
+  --danger: #e5534b;
+  --ok: #3fb950;
+  --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+  --ui: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #app { height: 100%; overflow: hidden; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--ui);
+  transition: border-color .12s, background .12s, color .12s;
+}
+button:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--amber-line); outline-offset: 1px; }
+
+button.primary {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: #1a1407;
+  font-weight: 700;
+}
+button.primary:hover { background: #ffb641; }
+button.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
+button.ghost:hover { color: var(--text); border-color: var(--border); background: transparent; }
+button.danger { color: var(--text-dim); }
+button.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+input[type="text"], input[type="number"], input[type="datetime-local"], select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color .12s;
+}
+input:focus { border-color: var(--amber-line); }
+input::placeholder { color: var(--text-faint); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #2b3242; border-radius: 5px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: #3a4356; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* 级别徽标 —— 信息编码，非装饰 */
+.lvl {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+  line-height: 17px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.lvl-0 { color: #768390; background: #23282f; }
+.lvl-1 { color: #6ea8fe; background: #17233a; }
+.lvl-2 { color: #57ab5a; background: #122619; }
+.lvl-3 { color: #d29922; background: #2c2208; }
+.lvl-4 { color: #e5534b; background: #351412; }
+.lvl-5 { color: #ff7b72; background: #41110e; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

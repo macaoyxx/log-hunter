@@ -179,7 +179,7 @@ function clearAllMarks() {
   width: min(760px, 64vw);
   background: var(--bg-panel);
   border-left: 1px solid var(--border-strong);
-  box-shadow: -18px 0 50px rgba(0, 0, 0, .5);
+  box-shadow: var(--shadow-panel);
   display: flex;
   flex-direction: column;
   z-index: 100;
@@ -221,14 +221,14 @@ function clearAllMarks() {
   font-family: var(--mono);
   font-size: 12px;
   cursor: pointer;
-  border-bottom: 1px solid #1a1f29;
+  border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 .crow:hover { background: var(--bg-hover); }
 .crow.target {
-  background: rgba(245, 165, 36, .22);
+  background: var(--amber-active);
   box-shadow: inset 4px 0 0 var(--amber);
-  outline: 1px solid rgba(245, 165, 36, .55);
+  outline: 1px solid var(--amber-line);
   outline-offset: -1px;
   font-weight: 600;
 }

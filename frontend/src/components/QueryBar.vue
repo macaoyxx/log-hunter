@@ -247,7 +247,14 @@ function addLevelAndSearch(lv: number) {
   showAdvanced.value = true
   search()
 }
-defineExpose({ reset, addLevelAndSearch })
+// 按最近一次查询条件重跑，供删除文件后自动刷新剩余文件的结果。
+// 无历史时（如首次加载的自动全览不经 search() 未入历史）退回
+// 按当前输入框条件查询（空条件 = 全览），fileIds 由 App 层按勾选重填
+function rerunLast() {
+  if (history.value[0]) emit('search', history.value[0].spec)
+  else search()
+}
+defineExpose({ reset, addLevelAndSearch, rerunLast })
 
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Enter') search()
@@ -395,8 +402,8 @@ const progPct = computed(() => {
 .hist-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
   width: 380px; max-height: 300px; overflow-y: auto;
-  background: var(--bg-elev); border: 1px solid var(--border-strong);
-  border-radius: 10px; box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+  background: var(--bg-float); border: 1px solid var(--border-strong);
+  border-radius: 10px; box-shadow: var(--shadow-pop);
   padding: 6px;
 }
 .hist-title {
@@ -442,12 +449,12 @@ const progPct = computed(() => {
   font-size: 11.5px;
   color: var(--text-dim);
 }
-.lvl-pick.sel-lvl0 { color: #9aa6b3; border-color: #768390; background: #23282f; }
-.lvl-pick.sel-lvl1 { color: #6ea8fe; border-color: #6ea8fe55; background: #17233a; }
-.lvl-pick.sel-lvl2 { color: #57ab5a; border-color: #57ab5a55; background: #122619; }
-.lvl-pick.sel-lvl3 { color: #d29922; border-color: #d2992255; background: #2c2208; }
-.lvl-pick.sel-lvl4 { color: #e5534b; border-color: #e5534b55; background: #351412; }
-.lvl-pick.sel-lvl5 { color: #ff7b72; border-color: #ff7b7255; background: #41110e; }
+.lvl-pick.sel-lvl0 { color: var(--lvl-0-fg); border-color: var(--lvl-0-fg); background: var(--lvl-0-bg); }
+.lvl-pick.sel-lvl1 { color: var(--lvl-1-fg); border-color: var(--lvl-1-fg); background: var(--lvl-1-bg); }
+.lvl-pick.sel-lvl2 { color: var(--lvl-2-fg); border-color: var(--lvl-2-fg); background: var(--lvl-2-bg); }
+.lvl-pick.sel-lvl3 { color: var(--lvl-3-fg); border-color: var(--lvl-3-fg); background: var(--lvl-3-bg); }
+.lvl-pick.sel-lvl4 { color: var(--lvl-4-fg); border-color: var(--lvl-4-fg); background: var(--lvl-4-bg); }
+.lvl-pick.sel-lvl5 { color: var(--lvl-5-fg); border-color: var(--lvl-5-fg); background: var(--lvl-5-bg); }
 
 .re-err { color: var(--danger); font-size: 12px; }
 
@@ -480,7 +487,7 @@ const progPct = computed(() => {
 .qprog-text { color: var(--text-dim); font-size: 12px; flex: none; }
 .err {
   color: var(--danger); font-size: 12px;
-  background: #351412; border: 1px solid #e5534b44;
+  background: var(--lvl-4-bg); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: 6px; padding: 6px 10px;
   white-space: pre-wrap;
 }
@@ -492,15 +499,15 @@ const progPct = computed(() => {
   padding: 6px 10px; font-size: 12px; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.hist-item:hover { background: var(--bg-hover); border: none; }
+.hist-item:hover { background: var(--bg-float-hover); border: none; }
 
 /* 正则模板库 */
 .tpl-wrap { position: relative; }
 .tpl-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
   width: 430px; max-height: 340px; overflow-y: auto;
-  background: var(--bg-elev); border: 1px solid var(--border-strong);
-  border-radius: 10px; box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+  background: var(--bg-float); border: 1px solid var(--border-strong);
+  border-radius: 10px; box-shadow: var(--shadow-pop);
   padding: 6px;
 }
 .tpl-item {
@@ -510,7 +517,7 @@ const progPct = computed(() => {
   background: transparent; border: none; border-radius: 6px;
   padding: 6px 10px; color: var(--text); align-items: baseline;
 }
-.tpl-item:hover { background: var(--bg-hover); border: none; }
+.tpl-item:hover { background: var(--bg-float-hover); border: none; }
 .tpl-name { font-weight: 600; font-size: 12.5px; color: var(--amber); }
 .tpl-hint { color: var(--text-dim); font-size: 11.5px; }
 .tpl-re {

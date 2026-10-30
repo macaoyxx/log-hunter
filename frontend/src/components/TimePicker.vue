@@ -157,10 +157,10 @@ const display = computed(() => (model.value || '').replace('T', ' '))
   top: calc(100% + 6px);
   left: 0;
   z-index: 60;
-  background: var(--bg-elev);
+  background: var(--bg-float);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+  box-shadow: var(--shadow-pop);
   padding: 12px;
   width: 262px;
 }
@@ -189,7 +189,7 @@ const display = computed(() => (model.value || '').replace('T', ' '))
   color: var(--text);
 }
 .tp-cell.empty { cursor: default; }
-.tp-cell:hover { background: var(--bg-hover); }
+.tp-cell:hover { background: var(--bg-float-hover); }
 .tp-cell.today { color: var(--amber); font-weight: 700; }
 .tp-cell.sel { background: var(--amber); color: #1a1407; font-weight: 700; }
 .tp-time {

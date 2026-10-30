@@ -1,32 +1,119 @@
 /* LogHunter — 狩猎观测台设计系统
-   底色碳黑偏蓝 / 琥珀信号色 / 等宽数据字体
-   token 一次定义，组件全部从这里取值 */
+   双主题：夜巡 Night Watch（默认，深夜排障主场景）/ 日间 Daylight（暖白纸感）
+   签名元素：信号色板——级别 6 色 + 标记 5 色 + 琥珀，两主题各自调校信噪比
+   token 一次定义，组件全部从这里取值；禁止在组件里硬编码色值 */
+
+/* ---------- 基础 token：夜巡（默认） ----------
+   表面四级层级（elevation）：bg 页面 < panel 面板 < elev 组件 < float 浮层。
+   浮层（菜单/下拉/日历）必须明显亮于面板并配深投影，浮起可辨 */
 :root {
-  --bg: #0f1115;
-  --bg-panel: #161a22;
-  --bg-elev: #1c212c;
-  --bg-hover: #202634;
+  --bg: #0f1115;          /* surface-0 页面 */
+  --bg-panel: #161a22;    /* surface-1 面板 */
+  --bg-elev: #1c212c;     /* surface-2 组件（按钮等） */
+  --bg-float: #262e3d;    /* surface-3 浮层（菜单/下拉/日历）——明显高于面板 */
+  --bg-hover: #2c3547;    /* 悬停（在 panel 与 float 上都可见） */
+  --bg-float-hover: #34405a; /* 浮层内菜单项悬停 */
   --border: #242a36;
-  --border-strong: #333c4e;
-  --text: #e2e6ef;
-  --text-dim: #7c8698;
-  --text-faint: #555e70;
+  --border-strong: #46536b;
+  --text: #edf1f8;
+  --text-dim: #9aa5b6;
+  --text-faint: #737e91;
   --amber: #f5a524;
   --amber-soft: rgba(245, 165, 36, .12);
   --amber-line: rgba(245, 165, 36, .45);
+  --amber-ink: #1a1407;          /* 琥珀底上的按钮文字 */
+  --amber-deep: #ffb641;         /* 琥珀按钮悬停 */
+  --amber-active: rgba(245, 165, 36, .22); /* 目标行/选中行琥珀底 */
   --danger: #e5534b;
   --ok: #3fb950;
+
+  /* 浮层投影：加深拉开层次 */
+  --shadow-pop: 0 10px 36px rgba(0, 0, 0, .65);
+  --shadow-panel: -18px 0 50px rgba(0, 0, 0, .5);
+
+  /* 查询命中高亮（关键字/正则默认琥珀，组件 fallback） */
+  --hl-kw-bg: rgba(245, 165, 36, .35);
+  --hl-kw-fg: #ffd479;
+
+  /* 滚动条 */
+  --scroll-thumb: #2b3242;
+  --scroll-thumb-hover: #3a4356;
+
+  /* 信号色板——级别 6 色（夜巡：亮字深底，前景亮而不过曝、背景加深衬托） */
+  --lvl-0-fg: #939caa; --lvl-0-bg: #22262d;
+  --lvl-1-fg: #7cb7ff; --lvl-1-bg: #14304f;
+  --lvl-2-fg: #64d983; --lvl-2-bg: #103020;
+  --lvl-3-fg: #e0b83f; --lvl-3-bg: #382c09;
+  --lvl-4-fg: #ff8a80; --lvl-4-bg: #3d1512;
+  --lvl-5-fg: #ffb4ac; --lvl-5-bg: #4a130f;
+
   --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
   --ui: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   --radius: 8px;
 }
 
-/* 右键格式标记 5 槽位色（详情面板）：以 --hl-bg/--hl-fg 变量驱动高亮组件覆盖默认琥珀色 */
-.mark-0 { --hl-bg: rgba(229, 83, 75, .30);   --hl-fg: #ff9b94; }
-.mark-1 { --hl-bg: rgba(210, 153, 34, .32);  --hl-fg: #e3b341; }
-.mark-2 { --hl-bg: rgba(63, 185, 80, .28);   --hl-fg: #7ee787; }
-.mark-3 { --hl-bg: rgba(110, 168, 254, .30); --hl-fg: #91c1ff; }
-.mark-4 { --hl-bg: rgba(188, 140, 255, .30); --hl-fg: #d2a8ff; }
+/* ---------- 基础 token：日间（暖白纸感 + 深信号色） ----------
+   表面层级反转策略：页面浅灰、面板更深、浮层纯白最亮——浮层在灰底上"抬起" */
+:root[data-theme='light'] {
+  --bg: #f4f6f8;          /* surface-0 页面（微灰） */
+  --bg-panel: #e9edf1;    /* surface-1 面板（更深一档） */
+  --bg-elev: #dfe4ea;     /* surface-2 组件 */
+  --bg-float: #ffffff;    /* surface-3 浮层（纯白，浮在灰底上清晰） */
+  --bg-hover: #dbe1e8;
+  --bg-float-hover: #edf1f5;
+  --border: #c9d1da;
+  --border-strong: #9facbb;
+  --text: #1c2129;
+  --text-dim: #444c56;
+  --text-faint: #6a737d;
+  --amber: #a86a00;
+  --amber-soft: rgba(168, 106, 0, .10);
+  --amber-line: rgba(168, 106, 0, .40);
+  --amber-ink: #ffffff;
+  --amber-deep: #8f5a00;
+  --amber-active: rgba(168, 106, 0, .15);
+  --danger: #cf222e;
+  --ok: #1a7f37;
+
+  --shadow-pop: 0 10px 36px rgba(31, 35, 40, .22);
+  --shadow-panel: -18px 0 50px rgba(31, 35, 40, .18);
+
+  --hl-kw-bg: rgba(168, 106, 0, .20);
+  --hl-kw-fg: #7a4f00;
+
+  --scroll-thumb: #c9d1da;
+  --scroll-thumb-hover: #b4bec9;
+
+  /* 信号色板——级别 6 色（日间：深字淡底，底加深一档保证徽章成型） */
+  --lvl-0-fg: #57606a; --lvl-0-bg: #dfe4ea;
+  --lvl-1-fg: #0969da; --lvl-1-bg: rgba(9, 105, 218, .14);
+  --lvl-2-fg: #1a7f37; --lvl-2-bg: rgba(26, 127, 55, .14);
+  --lvl-3-fg: #9a6700; --lvl-3-bg: rgba(154, 103, 0, .16);
+  --lvl-4-fg: #cf222e; --lvl-4-bg: rgba(207, 34, 46, .14);
+  --lvl-5-fg: #a40e26; --lvl-5-bg: rgba(164, 14, 38, .14);
+}
+
+/* 信号色板——右键格式标记 5 槽位（--hl-bg/--hl-fg 驱动高亮组件）：
+   夜巡底透明度 .35 + 前景提亮一档（对比度增强） */
+.mark-0 { --hl-bg: rgba(229, 83, 75, .35);   --hl-fg: #ffb3ad; }
+.mark-1 { --hl-bg: rgba(210, 153, 34, .38);  --hl-fg: #f2cc60; }
+.mark-2 { --hl-bg: rgba(63, 185, 80, .32);   --hl-fg: #8ff0a5; }
+.mark-3 { --hl-bg: rgba(110, 168, 254, .35); --hl-fg: #a5d6ff; }
+.mark-4 { --hl-bg: rgba(188, 140, 255, .35); --hl-fg: #e2c5ff; }
+:root[data-theme='light'] .mark-0 { --hl-bg: rgba(207, 34, 46, .12);   --hl-fg: #cf222e; }
+:root[data-theme='light'] .mark-1 { --hl-bg: rgba(154, 103, 0, .12);   --hl-fg: #9a6700; }
+:root[data-theme='light'] .mark-2 { --hl-bg: rgba(26, 127, 55, .12);   --hl-fg: #1a7f37; }
+:root[data-theme='light'] .mark-3 { --hl-bg: rgba(9, 105, 218, .12);   --hl-fg: #0969da; }
+:root[data-theme='light'] .mark-4 { --hl-bg: rgba(130, 80, 223, .12);  --hl-fg: #8250df; }
+
+/* 主题切换的背光过渡：切换瞬间由 JS 短暂挂到 <html>，250ms 后移除，
+   避免常态全局 transition 的性能损耗 */
+.theme-transitioning *,
+.theme-transitioning *::before,
+.theme-transitioning *::after {
+  transition: background-color .25s ease, color .25s ease,
+    border-color .25s ease, box-shadow .25s ease, fill .25s ease !important;
+}
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -58,10 +145,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--amber-line)
 button.primary {
   background: var(--amber);
   border-color: var(--amber);
-  color: #1a1407;
+  color: var(--amber-ink);
   font-weight: 700;
 }
-button.primary:hover { background: #ffb641; }
+button.primary:hover { background: var(--amber-deep); }
 button.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
 button.ghost:hover { color: var(--text); border-color: var(--border); background: transparent; }
 button.danger { color: var(--text-dim); }
@@ -81,11 +168,11 @@ input:focus { border-color: var(--amber-line); }
 input::placeholder { color: var(--text-faint); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #2b3242; border-radius: 5px; border: 2px solid var(--bg); }
-::-webkit-scrollbar-thumb:hover { background: #3a4356; }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 5px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* 级别徽标 —— 信息编码，非装饰 */
+/* 级别徽标 —— 信息编码，非装饰；色值走信号色板 token */
 .lvl {
   display: inline-block;
   padding: 1px 7px;
@@ -96,12 +183,12 @@ input::placeholder { color: var(--text-faint); }
   font-weight: 600;
   letter-spacing: .02em;
 }
-.lvl-0 { color: #768390; background: #23282f; }
-.lvl-1 { color: #6ea8fe; background: #17233a; }
-.lvl-2 { color: #57ab5a; background: #122619; }
-.lvl-3 { color: #d29922; background: #2c2208; }
-.lvl-4 { color: #e5534b; background: #351412; }
-.lvl-5 { color: #ff7b72; background: #41110e; }
+.lvl-0 { color: var(--lvl-0-fg); background: var(--lvl-0-bg); }
+.lvl-1 { color: var(--lvl-1-fg); background: var(--lvl-1-bg); }
+.lvl-2 { color: var(--lvl-2-fg); background: var(--lvl-2-bg); }
+.lvl-3 { color: var(--lvl-3-fg); background: var(--lvl-3-bg); }
+.lvl-4 { color: var(--lvl-4-fg); background: var(--lvl-4-bg); }
+.lvl-5 { color: var(--lvl-5-fg); background: var(--lvl-5-bg); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }

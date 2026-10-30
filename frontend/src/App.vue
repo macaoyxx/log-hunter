@@ -31,6 +31,33 @@ const ctxTarget = ref<{ fileId: number; offset: number } | null>(null)
 
 const queryBarRef = ref<InstanceType<typeof QueryBar> | null>(null)
 
+// ---------- 昼夜主题（默认 auto 跟随系统，选择持久化） ----------
+type ThemePref = 'auto' | 'light' | 'dark'
+const themePref = ref<ThemePref>((localStorage.getItem('lh-theme') as ThemePref) || 'auto')
+const THEME_ICONS: Record<ThemePref, string> = { auto: '🌗', light: '☀️', dark: '🌙' }
+const THEME_TITLES: Record<ThemePref, string> = {
+  auto: '主题：自动（跟随系统）', light: '主题：日间', dark: '主题：夜巡',
+}
+const themeMedia = window.matchMedia('(prefers-color-scheme: dark)')
+
+// 解析当前偏好为实际主题并挂到 <html data-theme>；切换瞬间挂过渡类做背光过渡
+function applyTheme() {
+  const t = themePref.value === 'auto' ? (themeMedia.matches ? 'dark' : 'light') : themePref.value
+  const root = document.documentElement
+  root.classList.add('theme-transitioning')
+  window.setTimeout(() => root.classList.remove('theme-transitioning'), 300)
+  root.dataset.theme = t
+}
+function cycleTheme() {
+  const order: ThemePref[] = ['auto', 'light', 'dark']
+  themePref.value = order[(order.indexOf(themePref.value) + 1) % order.length]
+  localStorage.setItem('lh-theme', themePref.value)
+  applyTheme()
+}
+function onSystemThemeChange() {
+  if (themePref.value === 'auto') applyTheme()
+}
+
 const fileNameMap = computed(() => {
   const m = new Map<number, string>()
   for (const f of files.value) m.set(f.id, f.name)
@@ -56,12 +83,14 @@ onMounted(() => {
   OnFileDrop((_x, _y, paths) => {
     if (paths && paths.length > 0) addFiles(paths)
   }, false)
+  themeMedia.addEventListener('change', onSystemThemeChange)
   refreshFiles()
 })
 onUnmounted(() => {
   EventsOff('files:progress')
   EventsOff('query:progress')
   OnFileDropOff()
+  themeMedia.removeEventListener('change', onSystemThemeChange)
 })
 
 // ---------- 文件管理 ----------
@@ -95,9 +124,18 @@ async function addFiles(paths: string[]) {
 }
 
 async function removeFile(id: number) {
+  const hadResults = stats.value !== null
   await RemoveFile(id)
   await refreshFiles()
   if (ctxTarget.value && !fileNameMap.value.has(ctxTarget.value.fileId)) ctxTarget.value = null
+  // 后端移除文件即作废全部查询结果。还有勾选文件且之前有结果：
+  // 按最近一次条件自动重查剩余文件（fileIds 按当前勾选重填）；
+  // 全删完（或无勾选/原本无结果）则清空结果表，相当于清空重来
+  if (hadResults && files.value.length > 0 && selected.value.size > 0) {
+    queryBarRef.value?.rerunLast()
+  } else {
+    stats.value = null
+  }
 }
 
 async function clearAll() {
@@ -161,6 +199,7 @@ function openContext(fileId: number, offset: number) {
       <span class="logo">▮</span>
       <span class="name">LogHunter</span>
       <span class="tag">本地日志排查 · 拖进来就查</span>
+      <button class="theme-btn" :title="THEME_TITLES[themePref]" @click="cycleTheme">{{ THEME_ICONS[themePref] }}</button>
     </header>
 
     <FileBar
@@ -213,6 +252,16 @@ function openContext(fileId: number, offset: number) {
   letter-spacing: .04em;
 }
 .tag { color: var(--text-faint); font-size: 12px; }
+.theme-btn {
+  margin-left: auto;
+  align-self: center;
+  background: transparent;
+  border: none;
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+.theme-btn:hover { background: var(--bg-hover); border: none; }
 .notice-bar {
   flex: none;
   display: flex;

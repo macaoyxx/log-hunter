@@ -34,7 +34,7 @@ func main() {
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
-			Theme:                windows.Dark,
+			Theme:                windows.SystemDefault, // 窗框跟随系统，与页面昼夜主题对齐
 		},
 		Bind: []interface{}{
 			app,

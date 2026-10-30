@@ -112,12 +112,13 @@ function onScroll() { emit('close') }
     ref="el" class="cmenu" :style="{ left: px + 'px', top: py + 'px' }"
     @contextmenu.prevent @mousedown.stop @mouseleave="enterItem(null)"
   >
-    <button class="mi" :disabled="!selText" title="复制右键选中的文本" @click="emit('copy')">
+    <button class="mi" :disabled="!selText" :title="selText ? '复制选中文本' : '先选中文本再复制'" @click="emit('copy')">
       <span class="m-ico">⧉</span>复制选中文本
     </button>
     <div class="sep"></div>
     <button
-      ref="markItem" class="mi has-sub" :class="{ active: open === 'mark' }" :disabled="!selText"
+      ref="markItem" class="mi has-sub" :class="{ active: open === 'mark' }"
+      :title="selText ? '选择颜色给选中内容加标记' : '先选中文本，再选颜色加标记'"
       @mouseenter="enterItem('mark')" @click.stop="toggleSub('mark')"
     >
       <span class="m-ico">◉</span>加标记<span class="m-arrow">▸</span>
@@ -138,7 +139,7 @@ function onScroll() { emit('close') }
     >
       <button
         v-for="(name, i) in SLOT_NAMES" :key="i" class="mi ch" :class="'mark-' + i"
-        :title="'用' + name + '色标记选中内容'"
+        :disabled="!selText" :title="selText ? '用' + name + '色标记选中内容' : '先选中要标记的文本'"
         @click="emit('mark', i)"
       ><i class="ch-bar"></i>标记 {{ i + 1 }} · {{ name }}</button>
     </div>
@@ -168,10 +169,10 @@ function onScroll() { emit('close') }
   z-index: 200;
   min-width: 164px;
   padding: 5px;
-  background: var(--bg-elev);
+  background: var(--bg-float);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+  box-shadow: var(--shadow-pop);
   font-size: 12px;
   color: var(--text);
   user-select: none;
@@ -215,8 +216,9 @@ function onScroll() { emit('close') }
   text-align: left;
   cursor: pointer;
 }
-.mi:hover:not(:disabled) { background: var(--bg-hover); }
-.mi:disabled { color: var(--text-faint); cursor: default; }
+.mi:hover:not(:disabled) { background: var(--bg-float-hover); }
+/* 禁用态保持可读（全局 .4 太灰像整菜单失效），色淡但字迹清楚 */
+.mi:disabled { opacity: .65; color: var(--text-faint); cursor: default; }
 .mi:disabled .m-ico { opacity: .5; }
 .m-ico {
   width: 18px;
@@ -227,7 +229,7 @@ function onScroll() { emit('close') }
 }
 .m-arrow { margin-left: auto; color: var(--text-faint); font-size: 10px; }
 /* 展开中的父项：左侧 2px 琥珀条（当前通道指示） */
-.mi.has-sub.active { background: var(--bg-hover); }
+.mi.has-sub.active { background: var(--bg-float-hover); }
 .mi.has-sub.active::before {
   content: '';
   position: absolute;

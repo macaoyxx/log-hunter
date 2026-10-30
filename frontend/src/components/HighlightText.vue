@@ -109,8 +109,8 @@ const segs = computed<Seg[]>(() => {
 
 <style scoped>
 .hl-mark {
-  background: var(--hl-bg, rgba(245, 165, 36, .35));
-  color: var(--hl-fg, #ffd479);
+  background: var(--hl-bg, var(--hl-kw-bg));
+  color: var(--hl-fg, var(--hl-kw-fg));
   border-radius: 2px;
   padding: 0 1px;
   font-weight: 600;

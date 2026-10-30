@@ -311,18 +311,18 @@ async function doExport(fmt: 'txt' | 'csv') {
 }
 .hit b { color: var(--amber); font-size: 14px; font-family: var(--mono); }
 .cost { color: var(--text-dim); font-family: var(--mono); margin-left: 4px; font-size: 11.5px; }
-.trunc { color: #d29922; }
+.trunc { color: var(--lvl-3-fg); }
 .spacer { flex: 1; }
 .dim { color: var(--text-dim); }
 .lvlstats { display: flex; gap: 4px; }
 .lvl-stat { font-size: 11px; padding: 2px 7px; font-family: var(--mono); border: none; background: transparent; }
 .lvl-stat b { font-weight: 700; }
-.lvlbtn-0 { color: #768390; } .lvlbtn-0:hover { background: #23282f; }
-.lvlbtn-1 { color: #6ea8fe; } .lvlbtn-1:hover { background: #17233a; }
-.lvlbtn-2 { color: #57ab5a; } .lvlbtn-2:hover { background: #122619; }
-.lvlbtn-3 { color: #d29922; } .lvlbtn-3:hover { background: #2c2208; }
-.lvlbtn-4 { color: #e5534b; } .lvlbtn-4:hover { background: #351412; }
-.lvlbtn-5 { color: #ff7b72; } .lvlbtn-5:hover { background: #41110e; }
+.lvlbtn-0 { color: var(--lvl-0-fg); } .lvlbtn-0:hover { background: var(--lvl-0-bg); }
+.lvlbtn-1 { color: var(--lvl-1-fg); } .lvlbtn-1:hover { background: var(--lvl-1-bg); }
+.lvlbtn-2 { color: var(--lvl-2-fg); } .lvlbtn-2:hover { background: var(--lvl-2-bg); }
+.lvlbtn-3 { color: var(--lvl-3-fg); } .lvlbtn-3:hover { background: var(--lvl-3-bg); }
+.lvlbtn-4 { color: var(--lvl-4-fg); } .lvlbtn-4:hover { background: var(--lvl-4-bg); }
+.lvlbtn-5 { color: var(--lvl-5-fg); } .lvlbtn-5:hover { background: var(--lvl-5-bg); }
 .nav { display: flex; align-items: center; gap: 6px; }
 .jump { color: var(--text-dim); display: flex; align-items: center; gap: 4px; font-size: 11.5px; }
 .jump input { width: 90px; padding: 3px 6px; font-family: var(--mono); }
@@ -341,7 +341,7 @@ async function doExport(fmt: 'txt' | 'csv') {
   flex: none;
   overflow: hidden;
   border-bottom: 2px solid var(--border-strong);
-  background: #141821;
+  background: var(--bg-panel);
 }
 .head-row {
   display: flex; align-items: center;
@@ -370,15 +370,15 @@ async function doExport(fmt: 'txt' | 'csv') {
   padding: 0 10px;
   font-family: var(--mono);
   font-size: 12px;
-  border-bottom: 1px solid #191e27;
+  border-bottom: 1px solid var(--border);
   cursor: default;
   white-space: nowrap;
 }
 .row:hover { background: var(--bg-hover); }
 .row.sel {
-  background: rgba(245, 165, 36, .22);
+  background: var(--amber-active);
   box-shadow: inset 4px 0 0 var(--amber);
-  outline: 1px solid rgba(245, 165, 36, .55);
+  outline: 1px solid var(--amber-line);
   outline-offset: -1px;
 }
 .row.sel .c-line { color: var(--amber); font-weight: 700; }

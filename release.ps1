@@ -1,4 +1,4 @@
-# 发版打包脚本：构建 → release/<版本>/ → 压缩 zip → 删除临时文件（exe），目录内只留 zip
+﻿# 发版打包脚本：构建 → release/<版本>/ → 压缩 zip → 删除临时文件（exe），目录内只留 zip
 # 用法: ./release.ps1 -Version 0.0.1
 param(
     [Parameter(Mandatory = $true)]

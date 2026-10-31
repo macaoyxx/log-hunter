@@ -7,8 +7,9 @@
 ```bash
 wails dev                    # 开发模式（热更新）
 wails build                  # 产出 build/bin/log-hunter.exe
-go test ./internal/...       # 单测（logscan 引擎 + appconf 配置）
+go test ./internal/...       # 单测（logscan 引擎 + update 更新器 + appconf 配置）
 go run ./cmd/logscan-bench -size 1024   # 性能基准（生成 1GB 日志并计时）
+go run ./cmd/stress-bench -mode multi   # 压力基准（20GB 双模式：单文件/10 文件，耗时+内存采样，数据可复用）
 go run ./tools/genicon       # 重新生成应用图标（build/appicon.png + icon.ico）
 cd frontend && npm run build # 前端类型检查（vue-tsc --noEmit）+ 构建
 ```
@@ -21,14 +22,19 @@ cd frontend && npm run build # 前端类型检查（vue-tsc --noEmit）+ 构建
 
 ```
 internal/logscan/   核心引擎 —— 纯库，严禁 import Wails 或任何 UI 依赖
+├── merge.go        时间合并排序（锚点 key+索引置换）与分组顺序读
+├── resultlimit.go  结果上限内存自适应（Windows 物理内存查询）
 ├── unzip.go        zip 解压（内容级二进制校验、临时目录生命周期）
 internal/appconf/   应用配置持久化 —— 纯库：data/config.json（主题+查询历史），不含 UI
-app.go              Wails 绑定层：包装 logscan.Session，进度事件、系统对话框
-main.go             Wails 入口（窗口/拖拽/主题配置）
+internal/update/    应用内自动更新 —— 纯库：下载（进度回调）/sha256 校验/解压/rename 自替换
+app.go              Wails 绑定层：包装 logscan.Session，进度事件、系统对话框、剪贴板、更新编排
+main.go             Wails 入口（窗口/拖拽/主题配置/启动埋点）
 frontend/src/       Vue 3 界面（手写组件，无 UI 框架/无 router/无状态管理库）
 cmd/logscan-bench/  性能验收基准
+cmd/stress-bench/   20GB 压力基准（双模式，全环节耗时+内存采样）
 tools/              辅助工具（纯 Go，不进产物）：genicon 图标生成 / packzip 跨平台压缩（发版脚本用）
-scripts/            发版脚本（bash 跨平台）：package.sh 仅本地打包 / publish.sh 带确认门发布
+scripts/            发版脚本（bash 跨平台）：package.sh 仅本地打包（附 sha256）/ publish.sh 带确认门发布
+docs/design.md      技术设计基线（架构/算法/实测数据）——改引擎前先读
 docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AGENTS.md 迭代文档规范）
 ```
 
@@ -38,16 +44,19 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 
 ## 改核心引擎前必读的设计约束
 
-这些是性能设计的一部分，改动前先理解动机（README「设计要点」）：
+这些是性能设计的一部分，改动前先理解动机（详细原理与实测数据见 `docs/design.md`）：
 
 1. **查询与结果构建分离**：查询只收集命中偏移；预览文本由前端按窗口经 `GetResults(offset, limit)` 惰性拉取。不要在查询阶段构建结果文本。
-2. **元数据索引而非全文索引**：时间/级别走内存索引（偏移/时间戳/级别平行数组）直查；无时间条件才并行全扫。
-3. **分块并行读**：16MB 块、块边界对齐换行；候选行访问用顺序读游标 + 缓冲池，无随机 IO。
-4. **编码**：GBK/UTF-8 自动探测；GBK 文件的关键字与正则按 GBK 字节匹配（预转换进 matcher），含 Unicode 范围类的正则不适用 GBK；高亮在 UTF-8 侧。
-5. **防御上限**：单行 64KB 截断；结果上限 200 万条（超限截断）；zip 解压总量 8GB。
-6. 正则一律 Go RE2（`regexp` 标准库），天然免疫灾难性回溯——禁止引入第三方正则库。
-7. 无时间戳的行（多行堆栈）附属于上一条，不参与时间/级别过滤——这是预期行为不是 bug。
-8. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录、`ClearAll`/退出删根目录；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收。
+2. **元数据索引而非全文索引**：时间/级别走内存索引（偏移/时间戳/级别平行数组，17B/行）直查；无时间条件才并行全扫。级别计数/最长行在 `buildIndex` 顺带预计算——**不要在查询期重扫全行算统计**。
+3. **结果三态**（session.mode）：`modeQuery`（条件查询物化）/ `modeBrowseVirtual`（无条件+平铺的全览**零物化**——不存结果数组，GetResults 按前缀和二分从索引现翻译，永不截断）/ `modeBrowseMat`（全览切合并时按需物化）。零物化的翻译与排序 key 计算都依赖「结果按文件连续、行号升序」的平铺序假设——破坏该假设的改动会引入错乱。
+4. **时间锚点继承是统一语义**：无时间戳的行（堆栈/SQL 续行）向前继承同文件上一条非零时间戳——`filterCandidates` 的时间筛选与 `sortMerged` 的排序 key 用同一规则，两处必须一起改。锚点扫描必须「进度/锚点双指针」（进度每行无条件推进）——只在遇非零时推进会遇大段无时间区退化成每行重扫（实测 782 亿次内层扫描、46.5s 卡死）。
+5. **排序一律排索引 + 置换环**（`merge.go` 的 `permuteStable`）：`sort.Stable` 的 Swap 是整结构体交换（64B/次），百万级数据慢一个数量级；置换环应用时注意 order 是「位置→原下标」语义、循环需要其逆置换。`groupedRead` 保证合并序下窗口按 (FileID,Offset) 分组顺序读（防随机 IO），平铺序下是稳定 no-op。
+6. **分块并行读**：16MB 块、块边界对齐换行；候选行访问用顺序读游标 + 缓冲池，无随机 IO；`buildIndex` 合并期逐块释放块结果（防双份 GB 级并存）；多文件加载 4 路并行、完成后按拖入序重排。
+7. **内存治理**：结果上限按物理内存自适应（`resultlimit.go`，200 万保底~2000 万封顶）；大结果被小结果替换时延迟 1s 异步 `debug.FreeOSMemory`（立刻跑会把全局 STW 计入紧邻查询）；**禁止 `debug.SetMemoryLimit`**——软上限让 GC 满负荷，20GB 全扫实测 7.8s→25s（反例已记入 design.md）。
+8. **编码**：GBK/UTF-8 自动探测；GBK 文件的关键字与正则按 GBK 字节匹配（预转换进 matcher），含 Unicode 范围类的正则不适用 GBK；高亮在 UTF-8 侧。
+9. **防御上限**：单行显示 64KB 截断（`capLine`）；zip 解压总量 8GB；**复制整行走后端**（`CopyLineText`/`CopyText` 直写系统剪贴板）——前端剪贴板 API（navigator.clipboard / 前端 ClipboardSetText）对大文本会截断，禁止前端自行写剪贴板。
+10. 正则一律 Go RE2（`regexp` 标准库），天然免疫灾难性回溯——禁止引入第三方正则库。
+11. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录、`ClearAll`/退出删根目录；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收。
 
 ## 编码约定
 
@@ -56,7 +65,8 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 - **颜色一律走 `style.css` token，双主题（夜巡 `:root` / 日间 `[data-theme='light']`）下严禁组件硬编码色值**。表面四级：`--bg`（页面）< `--bg-panel`（面板）< `--bg-elev`（组件）< `--bg-float`（浮层）——新增浮层（菜单/下拉）必须用 `--bg-float` + `--shadow-pop`；信号色板（`--lvl-N-fg/bg`、`.mark-N`）只在此处定义。
 - 主题状态在 `App.vue`（三态：auto/light/dark，localStorage `lh-theme` + matchMedia），启动预设在 `main.ts`（防闪色），勿在别处操作 `data-theme`。
 - 详情面板右键菜单（`ContextMenu.vue`）与格式标记槽位（`ContextPanel.vue` 内 5 槽）是纯前端状态，面板卸载即清；标记优先于查询高亮（重叠区间让位），该优先级在 `HighlightText.vue` 的区间裁剪逻辑里，改动保持。
-- 大结果集靠虚拟滚动 + 分段续载，任何列表改动不得破坏这一点。
+- 大结果集靠虚拟滚动 + 分段续载，任何列表改动不得破坏这一点。行渲染用**槽位复用**（`v-for` 的 key 是段内槽位号而非全局行号，内容经 `visibleRows` computed 驱动）——改成全局行号作 key 会退化成滚动时逐行挂载/卸载；无高亮条件时走纯文本插值快速路径（跳过 HighlightText 实例化）。
+- 结果表横向画布宽度封顶 `MAX_CANVAS_W`（20 万 px）——极长行（如整行 SQL dump 数十万字节）按 12px/rune 撑开会是数百万 px 的超大层，WebView 光栅化直接卡死界面（v0.0.5 实测 75 万 rune → 901 万 px 全界面卡）；超长行看全文走双击行的上下文面板。
 
 ## 其他
 

@@ -5,11 +5,15 @@ import (
 	"runtime"
 )
 
-// LineIndex 内存行索引：平行数组紧凑存储每行的偏移/时间戳/级别，不落盘
+// LineIndex 内存行索引：平行数组紧凑存储每行的偏移/时间戳/级别，不落盘。
+// levelCounts/maxLineLen 为建索引时顺带累计的全文件统计（零物化全览 O(文件数) 直取，
+// 避免每次查询重扫全部行——行长口径：字节不含 \n，与 scanner 的 matchRef.ln 一致）
 type LineIndex struct {
-	offsets []int64
-	ts      []int64 // unixNano，0 = 该行无时间戳（多行堆栈等）
-	levels  []int8
+	offsets     []int64
+	ts          []int64 // unixNano，0 = 该行无时间戳（多行堆栈等）
+	levels      []int8
+	levelCounts [6]int
+	maxLineLen  int
 }
 
 // LineCount 总行数
@@ -70,11 +74,13 @@ func (ix *LineIndex) filterCandidates(tsStart, tsEnd int64, levels map[Level]boo
 // indexProgress 索引构建进度回调（done/total 为字节）
 type indexProgress func(done, total int64)
 
-// chunkCols 单块提取的行元数据（offsets/ts/levels 等长）
+// chunkCols 单块提取的行元数据（offsets/ts/levels 等长）与块级统计
 type chunkCols struct {
-	offsets []int64
-	ts      []int64
-	levels  []int8
+	offsets     []int64
+	ts          []int64
+	levels      []int8
+	levelCounts [6]int
+	maxLineLen  int
 }
 
 // buildIndex 并行扫描整个文件构建行索引：各块并发提取行首元数据，按块序合并进平行数组
@@ -99,6 +105,14 @@ func buildIndex(ctx context.Context, lf *lineFile, parser *LineParser, progress 
 			c.offsets = append(c.offsets, start+off)
 			c.ts = append(c.ts, ts)
 			c.levels = append(c.levels, int8(lv))
+			// 统计顺带累计（lv 已解析、line 已在手，零额外遍历）：
+			// 级别计数与最长行（字节不含 \n，与 scanner 口径一致）
+			if lv >= 0 && int(lv) < len(c.levelCounts) {
+				c.levelCounts[lv]++
+			}
+			if n := len(line); n > c.maxLineLen {
+				c.maxLineLen = n
+			}
 		})
 		cols[ci] = c
 		return nil
@@ -107,7 +121,9 @@ func buildIndex(ctx context.Context, lf *lineFile, parser *LineParser, progress 
 		return nil, err
 	}
 
-	// 按块序合并（块内、块间 offset 均升序）
+	// 按块序合并（块内、块间 offset 均升序）；块级统计同步汇总。
+	// 边合并边置空块结果：否则全部块结果（与最终索引同量级，GB 级）会与最终
+	// 索引双份并存到函数返回，加载内存峰值翻倍
 	var total int
 	for _, c := range cols {
 		total += len(c.offsets)
@@ -117,10 +133,18 @@ func buildIndex(ctx context.Context, lf *lineFile, parser *LineParser, progress 
 		ts:      make([]int64, 0, total),
 		levels:  make([]int8, 0, total),
 	}
-	for _, c := range cols {
+	for i := range cols {
+		c := cols[i]
 		ix.offsets = append(ix.offsets, c.offsets...)
 		ix.ts = append(ix.ts, c.ts...)
 		ix.levels = append(ix.levels, c.levels...)
+		for lv, n := range c.levelCounts {
+			ix.levelCounts[lv] += n
+		}
+		if c.maxLineLen > ix.maxLineLen {
+			ix.maxLineLen = c.maxLineLen
+		}
+		cols[i] = chunkCols{} // 释放该块的底层数组，供 GC 回收
 	}
 	return ix, nil
 }

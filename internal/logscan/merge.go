@@ -32,7 +32,12 @@ func sortMerged(results []ResultRow, entryById map[int64]*FileEntry) {
 	for i := 0; i < len(results); {
 		fid := results[i].FileID
 		e := entryById[fid]
-		p := int64(-1) // 该文件最近一条非零 ts 的行下标（0-based），-1 = 尚无锚点
+		// 扫描进度与锚点分离：scanned 是组内已扫到的行下标（每行无条件推进，
+		// 否则遇大段无时间行时锚点卡住、后续行反复重扫全零区间——实测数据里
+		// 连续数十万无时间行会把这里放大成每行上万步、总扫描数百亿次）；
+		// anchor 是最近一条非零 ts 的行下标（无时间行的继承锚点）
+		scanned := int64(-1)
+		anchor := int64(-1)
 		j := i
 		for ; j < len(results) && results[j].FileID == fid; j++ {
 			if e == nil { // 防御：文件已移除（移除即清结果，正常不出现）
@@ -40,54 +45,66 @@ func sortMerged(results []ResultRow, entryById map[int64]*FileEntry) {
 				continue
 			}
 			li := results[j].LineNo - 1
-			// 从 p+1 推进到当前行，更新最近非零 ts 位置（p 单调前进）
-			for k := p + 1; k <= li; k++ {
+			for k := scanned + 1; k <= li; k++ {
 				if e.idx.ts[k] > 0 {
-					p = k
+					anchor = k
 				}
 			}
+			scanned = li
 			switch {
 			case results[j].TS > 0:
 				keys[j] = results[j].TS
-			case p >= 0 && p <= li:
-				keys[j] = e.idx.ts[p]
+			case anchor >= 0 && anchor <= li:
+				keys[j] = e.idx.ts[anchor]
 			default:
 				keys[j] = mergeKeyTail
 			}
 		}
 		i = j
 	}
-	sort.Stable(&mergeSorter{rows: results, keys: keys})
+	permuteStable(results, func(a, b int) bool { return keys[a] < keys[b] })
 }
 
-// mergeSorter 行与 key 绑定排序：直接对 results 用 sort.SliceStable 会只换行不换 key
-// （key 是独立数组，不随元素移动），比较函数随即错位——Swap 必须同步移动两者
-type mergeSorter struct {
-	rows []ResultRow
-	keys []int64
-}
-
-func (m *mergeSorter) Len() int           { return len(m.rows) }
-func (m *mergeSorter) Less(a, b int) bool { return m.keys[a] < m.keys[b] }
-func (m *mergeSorter) Swap(a, b int) {
-	m.rows[a], m.rows[b] = m.rows[b], m.rows[a]
-	m.keys[a], m.keys[b] = m.keys[b], m.keys[a]
+// permuteStable 稳定排序 results 并原地应用：排 int32 下标 + 置换环跟随重排。
+// 为什么不直接排数据：sort.Stable 的 Swap 是整结构体交换（64B/次），数百万行的
+// 排序需 O(n·log n) 次交换、拷贝量爆炸（实测 387 万行 44s 卡死）；排 4 字节下标
+// 再 O(n) 置换，总结构体交换降为每行至多一次。less 基于当前下标比较（如 keys[a]）
+func permuteStable(results []ResultRow, less func(a, b int) bool) {
+	if len(results) < 2 {
+		return
+	}
+	order := make([]int32, len(results))
+	for i := range order {
+		order[i] = int32(i)
+	}
+	sort.SliceStable(order, func(x, y int) bool { return less(int(order[x]), int(order[y])) })
+	// order[k] = 排序后第 k 位取原下标 order[k]；置换环跟随需要逆语义
+	//（dest[e] = 元素 e 的目标位置），先 O(n) 求逆再应用
+	dest := make([]int32, len(order))
+	for pos, src := range order {
+		dest[src] = int32(pos)
+	}
+	for i := 0; i < len(dest); i++ {
+		for dest[i] != int32(i) {
+			j := dest[i]
+			results[i], results[j] = results[j], results[i]
+			dest[i], dest[j] = dest[j], dest[i]
+		}
+	}
 }
 
 // sortFlat 恢复平铺序（文件加入顺序 + 行号升序）。FileID 自增即加入顺序
 func sortFlat(results []ResultRow) {
-	if len(results) < 2 {
-		return
-	}
-	sort.SliceStable(results, func(a, b int) bool {
-		if results[a].FileID != results[b].FileID {
-			return results[a].FileID < results[b].FileID
+	permuteStable(results, func(a, b int) bool {
+		ra, rb := &results[a], &results[b]
+		if ra.FileID != rb.FileID {
+			return ra.FileID < rb.FileID
 		}
-		return results[a].LineNo < results[b].LineNo
+		return ra.LineNo < rb.LineNo
 	})
 }
 
-// SetMerged 切换结果视图模式（平铺 / 时间合并），有结果时即时重排、不重新扫描文件。
+// SetMerged 切换结果视图模式（平铺 / 时间合并），即时重排、不重新扫描文件。
 // 外层 opMu 与 RunQuery/RemoveFile 串行化；排序全程持 s.mu 写锁——原地重排的是
 // s.results 底层数组，锁外进行会让并发 GetResults（RLock）读到行重复/缺失的中间态
 func (s *Session) SetMerged(merged bool) {
@@ -96,22 +113,63 @@ func (s *Session) SetMerged(merged bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.merged = merged
-	results := s.results
-	entries := make([]*FileEntry, len(s.entries))
-	copy(entries, s.entries)
-	if len(results) < 2 {
-		return
+
+	switch {
+	case s.mode == modeBrowseVirtual && merged:
+		// 零物化全览 → 时间合并：归并需要可排序的结果数组，从行索引按需物化
+		// （受自适应上限约束，超大日志合并全览会截断并提示——切换即接受该权衡）
+		s.materializeBrowseLocked()
+		if len(s.results) >= 2 {
+			sortMerged(s.results, s.entryByIdLocked())
+		}
+	case s.mode == modeBrowseMat && !merged:
+		// 全览物化 → 平铺：丢弃物化回零物化视图，Total 恢复全量、截断解除
+		s.results = nil
+		s.mode = modeBrowseVirtual
+		s.stats.Total = s.totalRowsLocked()
+		s.stats.Truncated = false
+	default:
+		// 查询结果的平铺↔合并两态排序
+		results := s.results
+		if len(results) < 2 {
+			return
+		}
+		// 合并排序的 key 计算要求平铺序输入：先归位再合并（结果当前可能是上次的合并序）。
+		// 两趟稳定排序均为几百 ms 量级（自适应上限内），切换可感知但不卡顿
+		sortFlat(results)
+		if merged {
+			sortMerged(results, s.entryByIdLocked())
+		}
 	}
-	entryById := make(map[int64]*FileEntry, len(entries))
-	for _, e := range entries {
-		entryById[e.ID] = e
+}
+
+// entryByIdLocked 当前文件表的 id 映射（锁内调用）
+func (s *Session) entryByIdLocked() map[int64]*FileEntry {
+	m := make(map[int64]*FileEntry, len(s.entries))
+	for _, e := range s.entries {
+		m[e.ID] = e
 	}
-	// 合并排序的 key 计算要求平铺序输入：先归位再合并（结果当前可能是上次的合并序）。
-	// 两趟稳定排序均为几百 ms 量级（200 万上限内），切换可感知但不卡顿
-	sortFlat(results)
-	if merged {
-		sortMerged(results, entryById)
+	return m
+}
+
+// materializeBrowseLocked 从行索引物化全览结果（持锁调用）：按文件分段顺序构造，
+// 避免逐行二分；受 resultLimit 约束，超出截断。级别/最长行统计沿用全览口径不变
+func (s *Session) materializeBrowseLocked() {
+	virtualTotal := s.totalRowsLocked() // 先取零物化全量（改 mode 后 totalRows 语义即变）
+	limit := s.resultLimit
+	results := make([]ResultRow, 0, min(limit, virtualTotal))
+	for _, e := range s.browseFiles {
+		if len(results) >= limit {
+			break
+		}
+		for li := 0; li < e.idx.LineCount() && len(results) < limit; li++ {
+			results = append(results, browseRow(e, li))
+		}
 	}
+	s.results = results
+	s.mode = modeBrowseMat
+	s.stats.Total = len(results)
+	s.stats.Truncated = len(results) < virtualTotal
 }
 
 // groupedRead 按 (FileID, Offset) 排序后分组顺序读每行原文，回调 (所属文件, 结果下标, 行字节)。

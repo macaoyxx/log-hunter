@@ -238,6 +238,11 @@ type seqReader struct {
 
 const seqBufSize = int64(4 << 20)
 
+// maxSeqLineBytes 超长行 fallback 的最大读量：不封顶会读到文件尾——单行 >4MB
+// 且其后还有数 GB 内容时一次性分配 GB 级内存直接 OOM；16MB 仍未遇换行按病态
+// 行截断返回（单行显示防御上限 64KB，16MB 已极宽裕）
+const maxSeqLineBytes = int64(16 << 20)
+
 // line 返回 off 起的一行（不含 \n）；自动保证该行完整落在缓冲内
 func (sr *seqReader) line(off int64) ([]byte, error) {
 	if off < sr.base || off >= sr.base+int64(len(sr.buf)) {
@@ -249,8 +254,12 @@ func (sr *seqReader) line(off int64) ([]byte, error) {
 	if i := bytes.IndexByte(sr.buf[rel:], '\n'); i >= 0 {
 		return sr.buf[rel : rel+int64(i)], nil
 	}
-	// 行尾换行不在缓冲内（超长行）：直接读 [off, 文件尾] 找换行
-	tail, err := sr.lf.readRange(off, sr.lf.size)
+	// 行尾换行不在缓冲内（超长行）：读受限区间找换行（见 maxSeqLineBytes 注释）
+	end := sr.lf.size
+	if limit := off + maxSeqLineBytes; end > limit {
+		end = limit
+	}
+	tail, err := sr.lf.readRange(off, end)
 	if err != nil {
 		return nil, err
 	}

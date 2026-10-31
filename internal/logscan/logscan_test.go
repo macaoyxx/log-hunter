@@ -603,14 +603,17 @@ func TestSetMergedTimeLine(t *testing.T) {
 	if _, err := s.RunQuery(context.Background(), &QuerySpec{FileIDs: allIDs}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.results) != 7 {
-		t.Fatalf("全览应 7 条: %d", len(s.results))
+	if s.stats.Total != 7 {
+		t.Fatalf("全览应 7 条: %d", s.stats.Total)
+	}
+	if len(s.results) != 0 {
+		t.Fatalf("纯全览零物化：results 应为空数组: %d", len(s.results))
 	}
 
-	// 平铺序（默认）：A1,A2,A3,B1,B2,P1,P2
-	flatSeq := resultSeq(s.results)
+	// 平铺序（零物化窗口翻译）：A1,A2,A3,B1,B2,P1,P2
+	flatSeq := resultSeq(s.GetResults(0, 7))
 
-	// 切合并：A1,B1,A2,A3,B2 时间归并 + P1,P2 置尾
+	// 切合并：从索引物化 + 时间归并 A1,B1,A2,A3,B2 + P1,P2 置尾
 	s.SetMerged(true)
 	want := []resultRef{
 		{added[0].ID, 1}, {added[1].ID, 1}, {added[0].ID, 2},
@@ -620,10 +623,13 @@ func TestSetMergedTimeLine(t *testing.T) {
 		t.Fatalf("合并序错误:\n got  %v\n want %v", got, want)
 	}
 
-	// 切回平铺：完全恢复原序（幂等）
+	// 切回平铺：丢弃物化回零物化视图（Total 恢复全量、results 清空、翻译序复原）
 	s.SetMerged(false)
-	if got := resultSeq(s.results); !seqEqual(got, flatSeq) {
-		t.Fatalf("切回平铺未恢复原序:\n got  %v\n flat %v", got, flatSeq)
+	if s.stats.Total != 7 || len(s.results) != 0 {
+		t.Fatalf("切回平铺应回零物化: total=%d results=%d", s.stats.Total, len(s.results))
+	}
+	if got := resultSeq(s.GetResults(0, 7)); !seqEqual(got, flatSeq) {
+		t.Fatalf("切回平铺翻译序不一致:\n got  %v\n flat %v", got, flatSeq)
 	}
 }
 
@@ -781,5 +787,198 @@ func TestSkippedNoTime(t *testing.T) {
 	}
 	if st.Total != 6 || st.SkippedNoTime != 1 {
 		t.Fatalf("时间条件应跳过无时间文件: total=%d skipped=%d", st.Total, st.SkippedNoTime)
+	}
+}
+
+// TestCalcResultLimit 结果上限换算 clamp 三边界（下限保底/线性区/封顶）
+func TestCalcResultLimit(t *testing.T) {
+	cases := []struct {
+		totalPhys int64
+		want      int
+	}{
+		{0, resultLimitFloor},                    // 检测失败兜底
+		{256 << 20, resultLimitFloor},            // 256MB → 换算值低于下限，保底
+		{1 << 30, 1 << 30 / 4 / resultRowBytes},  // 1GB → 线性区（约 419 万）
+		{4 << 30, 4 << 30 / 4 / resultRowBytes},  // 4GB → 线性区
+		{16 << 30, resultLimitCap},               // 16GB → 封顶
+		{64 << 30, resultLimitCap},               // 64GB → 封顶
+	}
+	for _, c := range cases {
+		if got := calcResultLimit(c.totalPhys); got != c.want {
+			t.Errorf("calcResultLimit(%d)=%d want %d", c.totalPhys, got, c.want)
+		}
+	}
+}
+
+// TestBrowseAllStatsMatch 零物化全览与物化路径（正则全命中）统计口径一致：
+// Total / LevelCounts 严格相等；MaxLineLen 在 ASCII 内容下两种口径（字节近似/rune）一致
+func TestBrowseAllStatsMatch(t *testing.T) {
+	logB := "2024-01-15 10:23:48.000 WARN [x] tail\n"
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, stdLog), writeTemp(t, logB)}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	allIDs := []int64{added[0].ID, added[1].ID}
+
+	browse, err := s.RunQuery(context.Background(), &QuerySpec{FileIDs: allIDs}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := s.RunQuery(context.Background(), &QuerySpec{FileIDs: allIDs, Regex: ".*"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if browse.Total != query.Total {
+		t.Fatalf("Total 不一致: 零物化=%d 物化=%d", browse.Total, query.Total)
+	}
+	if browse.LevelCounts != query.LevelCounts {
+		t.Fatalf("LevelCounts 不一致: %v vs %v", browse.LevelCounts, query.LevelCounts)
+	}
+	if browse.MaxLineLen != query.MaxLineLen {
+		t.Fatalf("MaxLineLen 不一致（ASCII 内容应相等）: %d vs %d", browse.MaxLineLen, query.MaxLineLen)
+	}
+	if browse.Truncated {
+		t.Fatal("零物化全览不应截断")
+	}
+}
+
+// TestBrowseGetResultsCrossFile 零物化全览的跨文件窗口翻译：
+// stdLog（6 行）+ 单行文件，窗口 [4,7) 跨两文件——行号/来源/内容逐一对应
+func TestBrowseGetResultsCrossFile(t *testing.T) {
+	logB := "2024-01-15 10:23:48.000 WARN [x] tail\n"
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, stdLog), writeTemp(t, logB)}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if _, err := s.RunQuery(context.Background(), &QuerySpec{
+		FileIDs: []int64{added[0].ID, added[1].ID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rows := s.GetResults(4, 3) // 全局第 5-7 行
+	if len(rows) != 3 {
+		t.Fatalf("窗口应 3 行: %d", len(rows))
+	}
+	// stdLog 行 5（堆栈）、行 6（INFO done）、logB 行 1（tail）
+	if rows[0].FileID != added[0].ID || rows[0].LineNo != 5 || rows[0].TS != 0 {
+		t.Fatalf("第 5 行应为文件 1 的无时间堆栈行: %+v", rows[0])
+	}
+	if rows[1].FileID != added[0].ID || rows[1].LineNo != 6 || !strings.Contains(rows[1].Preview, "order done") {
+		t.Fatalf("第 6 行应为文件 1 的 INFO done: %+v", rows[1])
+	}
+	if rows[2].FileID != added[1].ID || rows[2].LineNo != 1 || !strings.Contains(rows[2].Preview, "tail") {
+		t.Fatalf("第 7 行应为文件 2 第 1 行: %+v", rows[2])
+	}
+}
+
+// TestExportBrowseAll 零物化全览导出：txt 内容 = 各文件顺序全部原文行
+func TestExportBrowseAll(t *testing.T) {
+	logB := "2024-01-15 10:23:48.000 WARN [x] tail\n"
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, stdLog), writeTemp(t, logB)}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if _, err := s.RunQuery(context.Background(), &QuerySpec{
+		FileIDs: []int64{added[0].ID, added[1].ID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "out.txt")
+	n, err := s.ExportResults(p, "txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 7 {
+		t.Fatalf("导出应 7 行: %d", n)
+	}
+	b, _ := os.ReadFile(p)
+	lines := strings.Split(strings.TrimRight(string(b), "\r\n"), "\r\n")
+	if len(lines) != 7 {
+		t.Fatalf("导出行数错误: %d", len(lines))
+	}
+	if !strings.Contains(lines[2], "payment failed") || !strings.Contains(lines[6], "tail") {
+		t.Fatalf("导出内容顺序错误: %v", lines)
+	}
+}
+
+// TestBrowseMergeTruncate 上限内的全览合并物化截断与切回恢复
+func TestBrowseMergeTruncate(t *testing.T) {
+	s := newTestSession(t, stdLog) // 6 行
+	defer s.ClearAll()
+	e := s.Files()[0]
+	s.resultLimit = 3 // 压低上限验证截断路径（真实值按内存自适应）
+	if _, err := s.RunQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if s.stats.Total != 6 {
+		t.Fatalf("零物化全览不受上限: %d", s.stats.Total)
+	}
+	s.SetMerged(true)
+	if s.stats.Total != 3 || !s.stats.Truncated || len(s.results) != 3 {
+		t.Fatalf("合并物化应截断到 3: total=%d trunc=%v rows=%d",
+			s.stats.Total, s.stats.Truncated, len(s.results))
+	}
+	s.SetMerged(false)
+	if s.stats.Total != 6 || s.stats.Truncated || len(s.results) != 0 {
+		t.Fatalf("切回平铺应恢复零物化全量: total=%d trunc=%v rows=%d",
+			s.stats.Total, s.stats.Truncated, len(s.results))
+	}
+}
+
+// TestBuildIndexStats 建索引预计算统计正确性：级别计数与最长行（字节不含 \n）
+func TestBuildIndexStats(t *testing.T) {
+	s := newTestSession(t, stdLog) // 6 行：INFO×2、WARN×1、ERROR×1、无级别堆栈×2
+	defer s.ClearAll()
+	idx := s.Files()[0].idx
+	if idx.levelCounts[LevelInfo] != 2 || idx.levelCounts[LevelWarn] != 1 || idx.levelCounts[LevelError] != 1 {
+		t.Fatalf("级别计数错误: %v", idx.levelCounts)
+	}
+	// 最长行 = ERROR 行（"2024-01-15 10:23:46.001 ERROR [pay-svc] payment failed code=E502"，不含 \n）
+	want := len("2024-01-15 10:23:46.001 ERROR [pay-svc] payment failed code=E502")
+	if idx.maxLineLen != want {
+		t.Fatalf("最长行错误: %d want %d", idx.maxLineLen, want)
+	}
+}
+
+// TestSeqReaderHugeLine 超过 4MB 缓冲的单行（走 fallback 读路径）：读量有 16MB
+// 封顶不读到文件尾（其后还有大内容也不 OOM），行内容完整返回
+func TestSeqReaderHugeLine(t *testing.T) {
+	// 结构：首行 5MB 无换行（超 4MB 缓冲）+ 其后 2MB 正常行——旧行为会把
+	// [5MB 行首, 文件尾] 共 7MB+ 全量读入找换行；若行后是数 GB 同理爆炸
+	huge := strings.Repeat("A", 5<<20)
+	rest := strings.Repeat("2024-01-15 10:00:01.000 INFO tail\n", 60000)
+	p := filepath.Join(t.TempDir(), "huge.log")
+	os.WriteFile(p, []byte(huge+"\n"+rest), 0644)
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(), []string{p}, nil)
+	if len(errs) > 0 || len(added) != 1 {
+		t.Fatalf("加载失败: %v", errs)
+	}
+	e := added[0]
+	if e.idx.LineCount() != 60001 {
+		t.Fatalf("行数错误: %d", e.idx.LineCount())
+	}
+	// 首行偏移 0：GetLineText 走 fallback，应完整返回 5MB（< 16MB 封顶）
+	text, err := s.GetLineText(e.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(text) != 5<<20 {
+		t.Fatalf("超长行应完整返回 5MB: %d", len(text))
+	}
+	// GetResults 首屏预览正常（64KB 截断），不触发无界读
+	s.RunQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}}, nil)
+	rows := s.GetResults(0, 1)
+	if len(rows) != 1 || len(rows[0].Preview) > maxLineBytes+64 {
+		t.Fatalf("预览应 64KB 截断: %d", len(rows[0].Preview))
 	}
 }

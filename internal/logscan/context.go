@@ -95,8 +95,10 @@ func readContext(lf *lineFile, enc TextEncoding, idx *LineIndex, offset, before,
 	iterLines(buf, func(off int64, line []byte) {
 		abs := backStart + off
 		r := ContextRow{
-			Offset:   abs,
-			Text:     capLine(decodeLine(enc, line)),
+			Offset: abs,
+			// 完整原文不截断（用户要求看全/复制全——超长 SQL dump 行靠这里兜底；
+			// 渲染层单行横向滚动，单次渲染可承受）
+			Text:     decodeLine(enc, line),
 			IsTarget: abs == offset,
 		}
 		if idx != nil {

@@ -12,6 +12,7 @@ const props = defineProps<{
   y: number          // 弹出纵坐标（clientY）
   selText: string    // 当前选中文本（空串 = 未选中，相关项置灰）
   usedSlots: number[] // 使用中的标记槽位（0-4）
+  copiedHint?: '' | 'copy' | 'copyLine' // 复制成功反馈：对应项临时显示「✓ 已复制」
 }>()
 const emit = defineEmits<{
   (e: 'copy'): void
@@ -113,10 +114,16 @@ function onScroll() { emit('close') }
     ref="el" class="cmenu" :style="{ left: px + 'px', top: py + 'px' }"
     @contextmenu.prevent @mousedown.stop @mouseleave="enterItem(null)"
   >
-    <button class="mi" :title="'复制目标行的完整原文（不受显示截断限制）'" @click="emit('copyLine')">
+    <button v-if="copiedHint === 'copyLine'" class="mi copied" disabled>
+      <span class="m-ico">✓</span>已复制
+    </button>
+    <button v-else class="mi" :title="'复制目标行的完整原文（不受显示截断限制）'" @click="emit('copyLine')">
       <span class="m-ico">⧉</span>复制本行（完整原文）
     </button>
-    <button class="mi" :disabled="!selText" :title="selText ? '复制选中文本' : '先选中文本再复制'" @click="emit('copy')">
+    <button v-if="copiedHint === 'copy'" class="mi copied" disabled>
+      <span class="m-ico">✓</span>已复制
+    </button>
+    <button v-else class="mi" :disabled="!selText" :title="selText ? '复制选中文本' : '先选中文本再复制'" @click="emit('copy')">
       <span class="m-ico">⧉</span>复制选中文本
     </button>
     <div class="sep"></div>
@@ -204,6 +211,7 @@ function onScroll() { emit('close') }
 @media (prefers-reduced-motion: reduce) {
   .cmenu, .sub { animation: none; }
 }
+.mi.copied { color: var(--amber); font-weight: 600; }
 .mi {
   display: flex;
   align-items: center;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { GetResults, ExportResults, SaveFileDialog, CopyLineText } from '../../wailsjs/go/main/App'
+import { GetResults, ExportResults, SaveFileDialog, CopyLineText, CopyText } from '../../wailsjs/go/main/App'
 import { logscan } from '../../wailsjs/go/models'
 import HighlightText from './HighlightText.vue'
 
@@ -50,25 +50,33 @@ const segStart = ref(0)
 let fetchSeq = 0
 let rafPending = false
 
-// ---- 右键「复制整行」菜单 ----
-// 显示层有 64KB 截断，复制走后端取完整原文（整段 SQL dump 也能复制全）
-const rowMenu = ref<{ x: number; y: number; row: logscan.ResultRow } | null>(null)
-const rowMenuCopied = ref(false)
+// ---- 右键「复制」菜单 ----
+// 复制走后端取完整原文/选中文本并直写系统剪贴板（前端剪贴板 API 对大文本会截断）；
+// 反馈与详情面板一致：菜单内「✓ 已复制」后收起
+const rowMenu = ref<{ x: number; y: number; row: logscan.ResultRow; sel: string } | null>(null)
+const rowMenuCopied = ref<'' | 'row' | 'sel'>('')
+let rowMenuCloseTimer: number | undefined // 反馈自动收起定时器（重开菜单先清，防误关新菜单）
 function openRowMenu(e: MouseEvent, i: number) {
   const r = rowsCache.value.get(i)
   if (!r) return
   e.preventDefault()
-  rowMenuCopied.value = false
-  rowMenu.value = { x: e.clientX, y: e.clientY, row: r }
+  rowMenuCopied.value = ''
+  window.clearTimeout(rowMenuCloseTimer)
+  rowMenu.value = { x: e.clientX, y: e.clientY, row: r, sel: (window.getSelection()?.toString() ?? '').trim() }
 }
 function closeRowMenu() { rowMenu.value = null }
+function rowMenuCopiedOK(kind: 'row' | 'sel') {
+  rowMenuCopied.value = kind
+  window.clearTimeout(rowMenuCloseTimer)
+  rowMenuCloseTimer = window.setTimeout(closeRowMenu, 700) // 「已复制」短暂反馈后收起
+}
 // fixed 锚定鼠标坐标，贴近视口右/下缘时收回避免溢出
 const rowMenuStyle = computed(() => {
   const m = rowMenu.value
   if (!m) return {}
   return {
     left: Math.max(8, Math.min(m.x, window.innerWidth - 200)) + 'px',
-    top: Math.max(8, Math.min(m.y, window.innerHeight - 42)) + 'px',
+    top: Math.max(8, Math.min(m.y, window.innerHeight - 70)) + 'px',
   }
 })
 async function copyRow() {
@@ -76,8 +84,19 @@ async function copyRow() {
   if (!m) return
   try {
     await CopyLineText(m.row.fileId, m.row.offset) // 后端取完整原文并直写系统剪贴板
-    rowMenuCopied.value = true
-    window.setTimeout(closeRowMenu, 700) // 「已复制」短暂反馈后收起
+    rowMenuCopiedOK('row')
+  } catch (e) {
+    alert('复制失败：' + e)
+    closeRowMenu()
+  }
+}
+
+async function copySelText() {
+  const sel = rowMenu.value?.sel
+  if (!sel) return
+  try {
+    await CopyText(sel)
+    rowMenuCopiedOK('sel')
   } catch (e) {
     alert('复制失败：' + e)
     closeRowMenu()
@@ -370,11 +389,15 @@ async function doExport(fmt: 'txt' | 'csv') {
         </div>
       </div>
 
-      <!-- 右键「复制整行」菜单：fixed 锚定鼠标坐标，视口边缘翻转 -->
+      <!-- 右键复制菜单：fixed 锚定鼠标坐标，视口边缘翻转；反馈「✓ 已复制」后收起 -->
       <div v-if="rowMenu" class="row-menu" :style="rowMenuStyle" @mousedown.stop>
-        <button class="row-menu-item" @click="copyRow">
-          {{ rowMenuCopied ? '✓ 已复制' : '⧉ 复制整行（完整原文）' }}
+        <button v-if="rowMenuCopied === 'sel'" class="row-menu-item copied" disabled>✓ 已复制</button>
+        <button v-else class="row-menu-item" :disabled="!rowMenu.sel"
+          :title="rowMenu.sel ? '复制鼠标选中的文本' : '先选中文本再复制'" @click="copySelText">
+          ⧉ 复制选中文本
         </button>
+        <button v-if="rowMenuCopied === 'row'" class="row-menu-item copied" disabled>✓ 已复制</button>
+        <button v-else class="row-menu-item" @click="copyRow">⧉ 复制整行（完整原文）</button>
       </div>
     </div>
   </div>
@@ -557,4 +580,5 @@ async function doExport(fmt: 'txt' | 'csv') {
   cursor: pointer;
 }
 .row-menu-item:hover { background: var(--bg-float-hover); }
+.row-menu-item.copied { color: var(--amber); font-weight: 600; }
 </style>

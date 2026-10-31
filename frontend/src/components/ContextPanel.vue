@@ -72,9 +72,8 @@ async function copyText(text: string, tag: string) {
 // 复制目标行完整原文——后端按偏移读取并直写剪贴板，绕开一切显示层截断
 function copyRow() {
   CopyLineText(props.target.fileId, props.target.offset)
-    .then(() => { copied.value = '本行已复制' })
-    .catch(() => { copied.value = '复制失败' })
-  setTimeout(() => (copied.value = ''), 1500)
+    .then(() => menuCopiedOK('copyLine'))
+    .catch(() => { copied.value = '复制失败'; menu.value = null })
 }
 
 // 复制上下文全部行原文（按顺序拼接，与日志文件一致）
@@ -87,7 +86,8 @@ function copyAll() {
 // 面板期间保留（jump 换目标行、调前后行数不丢），关闭面板组件卸载即清空
 const MARK_SLOTS = SLOT_NAMES.length
 const markSlots = ref<string[][]>(Array.from({ length: MARK_SLOTS }, () => []))
-const menu = ref<{ x: number; y: number; sel: string } | null>(null)
+const menu = ref<{ x: number; y: number; sel: string; copied: '' | 'copy' | 'copyLine' } | null>(null)
+let menuCloseTimer: number | undefined // 复制反馈后的自动收起定时器（重开菜单先清，防误关新菜单）
 
 // 扁平化标记词传给每行高亮组件
 const marks = computed(() =>
@@ -100,11 +100,25 @@ const usedSlots = computed(() =>
 
 // 详情区右键：无论有无选中都弹菜单（无选中时相关项置灰）
 function onCtx(e: MouseEvent) {
-  menu.value = { x: e.clientX, y: e.clientY, sel: (window.getSelection()?.toString() ?? '').trim() }
+  window.clearTimeout(menuCloseTimer)
+  menu.value = { x: e.clientX, y: e.clientY, sel: (window.getSelection()?.toString() ?? '').trim(), copied: '' }
 }
-function copySel() {
-  if (menu.value?.sel) copyText(menu.value.sel, '选中')
-  menu.value = null
+// 复制成功反馈在菜单内显示「✓ 已复制」后收起（与结果表右键一致），不再用头部提示
+function menuCopiedOK(kind: 'copy' | 'copyLine') {
+  if (menu.value) menu.value = { ...menu.value, copied: kind }
+  window.clearTimeout(menuCloseTimer)
+  menuCloseTimer = window.setTimeout(() => { menu.value = null }, 700)
+}
+async function copySel() {
+  const sel = menu.value?.sel
+  if (!sel) { menu.value = null; return }
+  try {
+    await CopyText(sel)
+    menuCopiedOK('copy')
+  } catch {
+    copied.value = '复制失败'
+    menu.value = null
+  }
 }
 function applyMark(color: number) {
   const w = menu.value?.sel
@@ -165,7 +179,7 @@ function clearAllMarks() {
       </div>
     </div>
     <ContextMenu
-      v-if="menu" :x="menu.x" :y="menu.y" :sel-text="menu.sel" :used-slots="usedSlots"
+      v-if="menu" :x="menu.x" :y="menu.y" :sel-text="menu.sel" :used-slots="usedSlots" :copied-hint="menu.copied"
       @copy="copySel" @copy-line="copyRow" @mark="applyMark" @clear-slot="clearSlot" @clear-all="clearAllMarks"
       @close="menu = null"
     />

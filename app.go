@@ -6,34 +6,89 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"log-hunter/internal/appconf"
 	"log-hunter/internal/logscan"
+	"log-hunter/internal/update"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App 应用结构：Wails 绑定层，包装 logscan.Session 与配置存储
 type App struct {
-	ctx     context.Context
-	session *logscan.Session
-	conf    *appconf.Store
+	ctx       context.Context
+	session   *logscan.Session
+	conf      *appconf.Store
+	procStart time.Time // 进程启动时刻（埋点起点，main 传入）
+	startupAt time.Time // Wails OnStartup 时刻（埋点中点）
 }
 
 // NewApp 创建应用实例；配置存储打开失败降级为内存态（不阻断启动）
-func NewApp() *App {
+func NewApp(procStart time.Time) *App {
 	conf, err := appconf.Open()
 	if err != nil {
 		conf = nil
 	}
-	return &App{session: logscan.NewSession(), conf: conf}
+	return &App{session: logscan.NewSession(), conf: conf, procStart: procStart}
 }
 
-// startup Wails 生命周期：保存上下文
-func (a *App) startup(ctx context.Context) { a.ctx = ctx }
+// startup Wails 生命周期：保存上下文；清理上次自动更新残留的 .old；
+// 3 秒兜底显示窗口——正常显示点是前端就绪后的 ReportStartupReady，
+// 前端异常时兜底保证不至于永远无窗（WindowShow 重复调用无害）
+func (a *App) startup(ctx context.Context) {
+	a.ctx = ctx
+	a.startupAt = time.Now()
+	go func() {
+		if exe, err := os.Executable(); err == nil {
+			update.CleanupOld(exe)
+		}
+	}()
+	go func() {
+		time.Sleep(3 * time.Second)
+		runtime.WindowShow(ctx)
+	}()
+}
+
+// ReportStartupReady 前端界面就绪上报：显示窗口（隐藏启动的正式显示点），并把
+// 启动耗时埋点追加写入 data/startup.log（进程→OnStartup→界面就绪两段区间；
+// 写失败静默——诊断数据不该影响启动）
+func (a *App) ReportStartupReady() {
+	runtime.WindowShow(a.ctx)
+	readyAt := time.Now()
+	procToStartup := a.startupAt.Sub(a.procStart).Milliseconds()
+	startupToReady := readyAt.Sub(a.startupAt).Milliseconds()
+	line := fmt.Sprintf("%s 进程→启动 %dms · 界面就绪 %dms · 合计 %dms\r\n",
+		readyAt.Format("2006-01-02 15:04:05"), procToStartup, startupToReady,
+		procToStartup+startupToReady)
+	if cfgPath, err := appconf.DefaultPath(); err == nil {
+		_ = os.MkdirAll(filepath.Dir(cfgPath), 0755)
+		if f, err := os.OpenFile(filepath.Join(filepath.Dir(cfgPath), "startup.log"),
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			_, _ = f.WriteString(line)
+			_ = f.Close()
+		}
+	}
+}
+
+// LastStartupCost 读最近一次启动耗时埋点（关于弹窗展示；无记录返回空串）
+func (a *App) LastStartupCost() string {
+	cfgPath, err := appconf.DefaultPath()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(cfgPath), "startup.log"))
+	if err != nil || len(b) == 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\r\n"), "\r\n")
+	return lines[len(lines)-1]
+}
 
 // shutdown 退出时释放全部资源
 func (a *App) shutdown(ctx context.Context) { a.session.ClearAll() }
@@ -134,6 +189,26 @@ func (a *App) GetContext(fileID, offset int64, before, after int64) ([]logscan.C
 	return a.session.GetContext(fileID, offset, before, after)
 }
 
+// GetLineText 读指定行完整原文（不截断）——结果行右键「复制整行」用
+func (a *App) GetLineText(fileID, offset int64) (string, error) {
+	return a.session.GetLineText(fileID, offset)
+}
+
+// CopyText 统一后端写剪贴板——前端 navigator.clipboard / Wails 前端 ClipboardSetText
+// 对大文本（超长 SQL 行）实测会截断，复制动作全部收进 Go 侧直写系统剪贴板
+func (a *App) CopyText(text string) error {
+	return runtime.ClipboardSetText(a.ctx, text)
+}
+
+// CopyLineText 读指定行完整原文并直接写入剪贴板（右键复制整行的一步到位入口）
+func (a *App) CopyLineText(fileID, offset int64) error {
+	text, err := a.session.GetLineText(fileID, offset)
+	if err != nil {
+		return err
+	}
+	return runtime.ClipboardSetText(a.ctx, text)
+}
+
 // ValidateRegex 校验正则；返回空串表示合法，否则为错误说明
 func (a *App) ValidateRegex(s string) string {
 	if s == "" {
@@ -195,41 +270,162 @@ type UpdateInfo struct {
 	Latest    string `json:"latest"`
 	HasUpdate bool   `json:"hasUpdate"`
 	Err       string `json:"err"`
+	// 自动更新资产（Release 未匹配到时为空，前端回落手动下载链接）
+	AssetURL  string `json:"assetUrl"`
+	AssetName string `json:"assetName"`
+	AssetSize int64  `json:"assetSize"`
+	Sha256URL string `json:"sha256Url"`
 }
 
 const releasesAPI = "https://api.github.com/repos/macaoyxx/log-hunter/releases/latest"
 
-// CheckUpdate 对比 GitHub 最新 Release 与当前版本
-func (a *App) CheckUpdate() UpdateInfo {
+// releaseInfo CheckUpdate/StartUpdate 共用的 Release 查询结果
+type releaseInfo struct {
+	TagName string
+	Assets  []releaseAsset
+}
+
+type releaseAsset struct {
+	Name string
+	URL  string
+	Size int64
+}
+
+// fetchLatestRelease 查询 GitHub 最新 Release（5s 超时，UA 为 GitHub 硬性要求）
+func fetchLatestRelease() (releaseInfo, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, releasesAPI, nil)
 	if err != nil {
-		return UpdateInfo{Err: err.Error()}
+		return releaseInfo{}, err
 	}
-	req.Header.Set("User-Agent", "log-hunter") // GitHub API 要求带 UA
+	req.Header.Set("User-Agent", "log-hunter")
 	resp, err := client.Do(req)
 	if err != nil {
-		return UpdateInfo{Err: "网络请求失败：" + err.Error()}
+		return releaseInfo{}, fmt.Errorf("网络请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return UpdateInfo{Err: "GitHub 返回 " + resp.Status}
+		return releaseInfo{}, fmt.Errorf("GitHub 返回 %s", resp.Status)
 	}
 	var body struct {
 		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+			Size               int64  `json:"size"`
+		} `json:"assets"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return UpdateInfo{Err: "响应解析失败"}
+		return releaseInfo{}, fmt.Errorf("响应解析失败")
 	}
-	latest := strings.TrimPrefix(body.TagName, "v")
-	if latest == "" {
-		return UpdateInfo{Err: "未找到发布版本"}
+	if strings.TrimPrefix(body.TagName, "v") == "" {
+		return releaseInfo{}, fmt.Errorf("未找到发布版本")
 	}
-	// dev 构建无法比较版本，只报最新版不判更新
-	if version == "dev" {
-		return UpdateInfo{Latest: latest}
+	out := releaseInfo{TagName: strings.TrimPrefix(body.TagName, "v")}
+	for _, a := range body.Assets {
+		out.Assets = append(out.Assets, releaseAsset{Name: a.Name, URL: a.BrowserDownloadURL, Size: a.Size})
 	}
-	return UpdateInfo{Latest: latest, HasUpdate: cmpVersion(latest, version) > 0}
+	return out, nil
+}
+
+// pickUpdateAssets 从 Release 资产中匹配本平台更新包与校验文件（未匹配返回零值）
+func pickUpdateAssets(assets []releaseAsset) (zip, sum releaseAsset) {
+	for _, a := range assets {
+		switch {
+		case strings.HasPrefix(a.Name, "log-hunter-v") && strings.HasSuffix(a.Name, "-windows-amd64.zip"):
+			zip = a
+		case strings.HasSuffix(a.Name, ".sha256"):
+			sum = a
+		}
+	}
+	return
+}
+
+// CheckUpdate 对比 GitHub 最新 Release 与当前版本，并解析可用的自动更新资产
+func (a *App) CheckUpdate() UpdateInfo {
+	rel, err := fetchLatestRelease()
+	if err != nil {
+		return UpdateInfo{Err: err.Error()}
+	}
+	zip, sum := pickUpdateAssets(rel.Assets)
+	info := UpdateInfo{Latest: rel.TagName,
+		AssetURL: zip.URL, AssetName: zip.Name, AssetSize: zip.Size, Sha256URL: sum.URL}
+	// dev 构建（迭代号-dev 后缀）无法可靠比较版本，只报最新版不判更新
+	if strings.HasSuffix(version, "-dev") {
+		return UpdateInfo{Latest: rel.TagName}
+	}
+	info.HasUpdate = cmpVersion(rel.TagName, version) > 0
+	return info
+}
+
+// StartUpdate 应用内自动更新：查最新 Release → 下载（进度经 update:progress 事件）→
+// sha256 校验（资产存在时强制；v0.0.5 前的历史 Release 无 checksum，过渡跳过）→
+// 解压 → rename 自替换。成功后由前端调 Restart 进入新版本；失败时旧版本不受影响
+func (a *App) StartUpdate() error {
+	rel, err := fetchLatestRelease()
+	if err != nil {
+		return fmt.Errorf("检查更新失败: %w", err)
+	}
+	if strings.HasSuffix(version, "-dev") {
+		return fmt.Errorf("开发版不支持自动更新，请手动下载")
+	}
+	if cmpVersion(rel.TagName, version) <= 0 {
+		return fmt.Errorf("已是最新版本")
+	}
+	zip, sum := pickUpdateAssets(rel.Assets)
+	if zip.URL == "" {
+		return fmt.Errorf("该版本没有 Windows 更新包，请手动下载")
+	}
+	dir, err := os.MkdirTemp("", "log-hunter-update-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir) // 替换成功后新 exe 已落位原名，临时物全清
+	zipPath := filepath.Join(dir, zip.Name)
+	if err := update.Download(a.ctx, zip.URL, zipPath, func(p update.DownloadProgress) {
+		runtime.EventsEmit(a.ctx, "update:progress", p)
+	}); err != nil {
+		return fmt.Errorf("下载失败: %w", err)
+	}
+	if sum.URL != "" {
+		sumPath := filepath.Join(dir, sum.Name)
+		if err := update.Download(a.ctx, sum.URL, sumPath, nil); err != nil {
+			return fmt.Errorf("下载校验文件失败: %w", err)
+		}
+		b, err := os.ReadFile(sumPath)
+		if err != nil {
+			return err
+		}
+		fields := strings.Fields(string(b)) // sha256sum 格式："哈希  文件名"
+		if len(fields) == 0 {
+			return fmt.Errorf("校验文件格式异常")
+		}
+		if err := update.VerifySHA256(zipPath, fields[0]); err != nil {
+			return fmt.Errorf("完整性校验失败（请手动下载重试）: %w", err)
+		}
+	}
+	newExe := filepath.Join(dir, "log-hunter.exe")
+	if err := update.ExtractExe(zipPath, newExe); err != nil {
+		return err
+	}
+	cur, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return update.Apply(newExe, cur)
+}
+
+// Restart 启动新版本进程并退出当前应用（更新替换完成后由前端调用）
+func (a *App) Restart() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := exec.Command(exe).Start(); err != nil {
+		return fmt.Errorf("启动新版本失败: %w", err)
+	}
+	runtime.Quit(a.ctx)
+	return nil
 }
 
 // cmpVersion 语义化版本比较（a.b.c 数字逐段），返回 >0 表示 a 更新

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { GetContext } from '../../wailsjs/go/main/App'
+import { GetContext, CopyText, CopyLineText } from '../../wailsjs/go/main/App'
 import { logscan } from '../../wailsjs/go/models'
 import HighlightText from './HighlightText.vue'
 import ContextMenu from './ContextMenu.vue'
@@ -61,7 +61,7 @@ function jump(off: number) {
 async function copyText(text: string, tag: string) {
   if (!text) return
   try {
-    await navigator.clipboard.writeText(text)
+    await CopyText(text) // 后端直写系统剪贴板——前端 clipboard API 对大文本会截断
     copied.value = tag + '已复制'
   } catch {
     copied.value = '复制失败'
@@ -69,10 +69,12 @@ async function copyText(text: string, tag: string) {
   setTimeout(() => (copied.value = ''), 1500)
 }
 
-// 复制目标行原文
+// 复制目标行完整原文——后端按偏移读取并直写剪贴板，绕开一切显示层截断
 function copyRow() {
-  const row = rows.value.find(r => r.isTarget)
-  copyText(row?.text ?? '', '本行')
+  CopyLineText(props.target.fileId, props.target.offset)
+    .then(() => { copied.value = '本行已复制' })
+    .catch(() => { copied.value = '复制失败' })
+  setTimeout(() => (copied.value = ''), 1500)
 }
 
 // 复制上下文全部行原文（按顺序拼接，与日志文件一致）
@@ -135,7 +137,6 @@ function clearAllMarks() {
       <div class="ctrl">
         <label>前 <input type="number" min="0" max="500" v-model.number="before" @change="load" class="num" /> 行</label>
         <label>后 <input type="number" min="0" max="500" v-model.number="after" @change="load" class="num" /> 行</label>
-        <button class="ghost" @click="copyRow" title="只复制目标行原文">⧉ 本行</button>
         <button class="ghost" @click="copyAll" title="复制当前显示的全部上下文行（含前后）">⧉ 全部</button>
         <span v-if="copied" class="copied-tip">{{ copied }}</span>
         <button class="ghost" @click="load" :disabled="loading" title="重新读取">⟳</button>
@@ -165,7 +166,7 @@ function clearAllMarks() {
     </div>
     <ContextMenu
       v-if="menu" :x="menu.x" :y="menu.y" :sel-text="menu.sel" :used-slots="usedSlots"
-      @copy="copySel" @mark="applyMark" @clear-slot="clearSlot" @clear-all="clearAllMarks"
+      @copy="copySel" @copy-line="copyRow" @mark="applyMark" @clear-slot="clearSlot" @clear-all="clearAllMarks"
       @close="menu = null"
     />
     <div class="foot">提示：点击任意行移视角；选中文本右键加标记；⛶ 可放大铺满；行内容为完整原文（左右滚动查看）</div>

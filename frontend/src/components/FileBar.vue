@@ -8,6 +8,7 @@ const props = defineProps<{
   selected: Set<number>
   loading: boolean
   progress: { name: string; done: number; total: number; fileNo: number } | null
+  fileTotal?: number // 本次拖入文件总数（多文件并行加载时显示「第 N/M 个」）
 }>()
 const emit = defineEmits<{
   (e: 'add', paths: string[]): void
@@ -69,7 +70,7 @@ const totalSize = computed(() => props.files.reduce((s, f) => s + f.size, 0))
 
     <!-- 加载中（首个文件） -->
     <div v-else-if="loading && files.length === 0" class="hero">
-      <div class="hero-title">正在解析 {{ progress?.name }}…</div>
+      <div class="hero-title">正在解析 {{ progress?.name }}<template v-if="fileTotal">（第 {{ progress?.fileNo }}/{{ fileTotal }} 个）</template>…</div>
       <div class="hero-prog"><div class="hero-prog-fill" :style="{ width: progPct + '%' }"></div></div>
       <div class="hero-sub">{{ progPct.toFixed(0) }}% · 建好索引后查询是毫秒级的</div>
     </div>
@@ -82,7 +83,7 @@ const totalSize = computed(() => props.files.reduce((s, f) => s + f.size, 0))
           <span>全选</span>
         </label>
         <div v-if="loading" class="prog">
-          <span class="prog-name">{{ progress?.name }}</span>
+          <span class=prog-name>{{ progress?.name }}<template v-if=fileTotal> · {{ progress?.fileNo }}/{{ fileTotal }}</template></span>
           <div class="prog-bar"><div class="prog-fill" :style="{ width: progPct + '%' }"></div></div>
           <span class="prog-pct">{{ progPct.toFixed(0) }}%</span>
         </div>

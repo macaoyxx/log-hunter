@@ -15,6 +15,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (e: 'copy'): void
+  (e: 'copyLine'): void
   (e: 'mark', color: number): void
   (e: 'clearSlot', color: number): void
   (e: 'clearAll'): void
@@ -112,6 +113,9 @@ function onScroll() { emit('close') }
     ref="el" class="cmenu" :style="{ left: px + 'px', top: py + 'px' }"
     @contextmenu.prevent @mousedown.stop @mouseleave="enterItem(null)"
   >
+    <button class="mi" :title="'复制目标行的完整原文（不受显示截断限制）'" @click="emit('copyLine')">
+      <span class="m-ico">⧉</span>复制本行（完整原文）
+    </button>
     <button class="mi" :disabled="!selText" :title="selText ? '复制选中文本' : '先选中文本再复制'" @click="emit('copy')">
       <span class="m-ico">⧉</span>复制选中文本
     </button>

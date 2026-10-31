@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { GetResults, ExportResults, SaveFileDialog } from '../../wailsjs/go/main/App'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { GetResults, ExportResults, SaveFileDialog, CopyLineText } from '../../wailsjs/go/main/App'
 import { logscan } from '../../wailsjs/go/models'
 import HighlightText from './HighlightText.vue'
 
@@ -13,6 +13,7 @@ const props = defineProps<{
   highlightKeywords: string[]
   highlightRegex: string
   merged: boolean
+  merging: boolean
   noTimeNames: string[]
 }>()
 const emit = defineEmits<{
@@ -26,6 +27,10 @@ const OVERSCAN = 15
 const PAGE = 300
 const MAX_CANVAS_H = 30_000_000 // 纵向画布上限（浏览器 ~33M px）
 const SEG_ROWS = Math.floor(MAX_CANVAS_H / ROW_H) - 1000 // 每段行数（约 99 万）
+// 横向画布上限：极长行（如整行 SQL dump 数十万字节）按 12px/rune 撑开会是数百万
+// px 宽的超大层，WebView 光栅化直接卡死界面；封顶后超出部分横向滚动不可达，
+// 看全文走双击行的上下文面板（其内单行同样有 64KB 防御截断）
+const MAX_CANVAS_W = 200_000
 
 // 列宽（表头与行共用）
 const W_FILE = 200, W_LINE = 86, W_TS = 122, W_LVL = 64, PAD = 20
@@ -36,19 +41,64 @@ const scrollTop = ref(0)
 const scrollLeft = ref(0)
 const viewH = ref(600)
 const viewW = ref(900)
-const rowsCache = ref(new Map<number, logscan.ResultRow>())
+// 结果行缓存：shallowRef——Map 只做浅引用（行对象内容不可变），批次到达整体替换
+// 触发一次更新；深层代理会让每批数据触发全部可见行重渲染
+const rowsCache = shallowRef(new Map<number, logscan.ResultRow>())
 const selIdx = ref(-1)
 const jumpTo = ref('')
 const segStart = ref(0)
 let fetchSeq = 0
 let rafPending = false
 
+// ---- 右键「复制整行」菜单 ----
+// 显示层有 64KB 截断，复制走后端取完整原文（整段 SQL dump 也能复制全）
+const rowMenu = ref<{ x: number; y: number; row: logscan.ResultRow } | null>(null)
+const rowMenuCopied = ref(false)
+function openRowMenu(e: MouseEvent, i: number) {
+  const r = rowsCache.value.get(i)
+  if (!r) return
+  e.preventDefault()
+  rowMenuCopied.value = false
+  rowMenu.value = { x: e.clientX, y: e.clientY, row: r }
+}
+function closeRowMenu() { rowMenu.value = null }
+// fixed 锚定鼠标坐标，贴近视口右/下缘时收回避免溢出
+const rowMenuStyle = computed(() => {
+  const m = rowMenu.value
+  if (!m) return {}
+  return {
+    left: Math.max(8, Math.min(m.x, window.innerWidth - 200)) + 'px',
+    top: Math.max(8, Math.min(m.y, window.innerHeight - 42)) + 'px',
+  }
+})
+async function copyRow() {
+  const m = rowMenu.value
+  if (!m) return
+  try {
+    await CopyLineText(m.row.fileId, m.row.offset) // 后端取完整原文并直写系统剪贴板
+    rowMenuCopied.value = true
+    window.setTimeout(closeRowMenu, 700) // 「已复制」短暂反馈后收起
+  } catch (e) {
+    alert('复制失败：' + e)
+    closeRowMenu()
+  }
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('mousedown', (e: MouseEvent) => {
+    if (rowMenu.value && !(e.target as HTMLElement)?.closest?.('.row-menu')) closeRowMenu()
+  })
+}
+function onKeydownEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape' && rowMenu.value) closeRowMenu()
+}
+
 const total = computed(() => props.stats?.total ?? 0)
 
-// 画布宽度：固定列 + 最长行估算（每 rune 按 12px 上界，绝不裁剪内容；短行不撑宽）
+// 画布宽度：固定列 + 最长行估算（每 rune 按 12px 上界，绝不裁剪内容；短行不撑宽），
+// 封顶 MAX_CANVAS_W（见其注释——超长行撑出的超大层会拖死渲染）
 const canvasW = computed(() => {
   const maxLen = props.stats?.maxLineLen ?? 0
-  return Math.max(viewW.value, FIXED_W + maxLen * 12)
+  return Math.max(viewW.value, Math.min(FIXED_W + maxLen * 12, MAX_CANVAS_W))
 })
 
 // ---- 分段 ----
@@ -72,6 +122,15 @@ const visible = computed(() => {
   for (let i = first; i < last; i++) idx.push(i)
   return idx
 })
+
+// 槽位复用渲染数据：槽位号（0..N）作 v-for key，内容为 {全局行号, 行数据}——滚动
+// 滑窗时只 patch 文本不 mount/unmount 行组件（此前按全局行号作 key，每帧滑出的
+// 行卸载、滑入的行全新挂载，是滚动开销大头）
+const visibleRows = computed(() =>
+  visible.value.map(gi => ({ gi, row: rowsCache.value.get(gi) })))
+
+// 无高亮条件时纯文本渲染，跳过 HighlightText 组件实例化（全览浏览常态场景）
+const hasHl = computed(() => props.highlightKeywords.length > 0 || !!props.highlightRegex)
 
 // ---- 数据窗口拉取 ----
 async function loadVisible() {
@@ -159,6 +218,7 @@ function openRow(i: number) {
   emit('open-context', r.fileId, r.offset)
 }
 function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && rowMenu.value) { closeRowMenu(); return }
   if (total.value === 0) return
   if (selIdx.value < 0 && e.key !== 'ArrowDown') return
   if (e.key === 'ArrowDown') { e.preventDefault(); selIdx.value = Math.min(total.value - 1, selIdx.value + 1); ensureVisible(selIdx.value) }
@@ -233,10 +293,12 @@ async function doExport(fmt: 'txt' | 'csv') {
     <div v-if="stats" class="statusbar">
       <span class="hit">找到 <b>{{ stats.total.toLocaleString() }}</b> 条<span class="cost">· {{ stats.costMs }} ms</span></span>
       <span class="viewswitch" role="group" title="多文件结果的排列方式：平铺=按拖入顺序逐文件拼接；时间合并=按日志时间归并成单一时间线（无时间戳的行跟随上一条有时间日志，无时间文件置尾）">
-        <button :class="{ on: !merged }" :disabled="querying" @click="emit('toggle-merged', false)">平铺</button>
-        <button :class="{ on: merged }" :disabled="querying" @click="emit('toggle-merged', true)">时间合并</button>
+        <button :class="{ on: !merged }" :disabled="querying || merging" @click="emit('toggle-merged', false)">平铺</button>
+        <button :class="{ on: merged }" :disabled="querying || merging" @click="emit('toggle-merged', true)">时间合并</button>
       </span>
-      <span v-if="stats.truncated" class="trunc" title="命中过多，只保留前 200 万条">⚠ 已截断</span>
+      <span v-if="merging" class="merging-tip">排序中…</span>
+      <span v-if="stats.truncated" class="trunc"
+        :title="`命中过多，只保留前 ${(stats.resultLimit ?? 2_000_000).toLocaleString()} 条（按内存自适应）`">⚠ 已截断</span>
       <span v-if="merged && noTimeNames.length" class="notime" :title="'无时间列，命中置尾：\n' + noTimeNames.join('\n')">
         ⚠ {{ noTimeNames.length }} 个文件无时间戳 · 置尾
       </span>
@@ -277,23 +339,25 @@ async function doExport(fmt: 'txt' | 'csv') {
       </div>
       <div class="viewport" ref="viewport" tabindex="0" @scroll.passive="onScroll" @keydown="onKeydown">
         <div class="canvas" :style="{ height: segCanvasH + 'px', width: canvasW + 'px' }">
-          <div class="rows">
-            <div v-for="i in visible" :key="i" class="row" :class="{ sel: i === selIdx }"
-              :style="{ top: ((i - segStart) * ROW_H) + 'px' }"
-              @click="clickRow(i)" @dblclick="openRow(i)">
-              <span class="c-file" :title="fileNames.get(rowsCache.get(i)?.fileId ?? -1) ?? ''">
-                {{ fileNames.get(rowsCache.get(i)?.fileId ?? -1) ?? '' }}
+          <!-- key 含视图模式与查询代次：切换重排后容器重建，播放一次淡入过渡 -->
+          <div class="rows" :key="(merged ? 'm' : 'f') + '-' + (stats?.total ?? 0)">
+            <div v-for="(vr, slot) in visibleRows" :key="slot" class="row" :class="{ sel: vr.gi === selIdx }"
+              :style="{ top: ((vr.gi - segStart) * ROW_H) + 'px' }"
+              @click="clickRow(vr.gi)" @dblclick="openRow(vr.gi)" @contextmenu="openRowMenu($event, vr.gi)">
+              <span class="c-file" :title="fileNames.get(vr.row?.fileId ?? -1) ?? ''">
+                {{ fileNames.get(vr.row?.fileId ?? -1) ?? '' }}
               </span>
-              <span class="c-line">{{ rowsCache.get(i)?.lineNo ?? '' }}</span>
-              <span class="c-ts">{{ rowsCache.get(i) ? fmtTs(rowsCache.get(i)!.ts) : '' }}</span>
+              <span class="c-line">{{ vr.row?.lineNo ?? '' }}</span>
+              <span class="c-ts">{{ vr.row ? fmtTs(vr.row.ts) : '' }}</span>
               <span class="c-lvl">
-                <i v-if="rowsCache.get(i) && rowsCache.get(i)!.level >= 0" class="lvl" :class="'lvl-' + rowsCache.get(i)!.level">
-                  {{ LEVEL_NAMES[rowsCache.get(i)!.level] }}
+                <i v-if="vr.row && vr.row.level >= 0" class="lvl" :class="'lvl-' + vr.row.level">
+                  {{ LEVEL_NAMES[vr.row.level] }}
                 </i>
               </span>
               <span class="c-text">
-                <HighlightText :text="rowsCache.get(i)?.preview ?? ''"
+                <HighlightText v-if="hasHl" :text="vr.row?.preview ?? ''"
                   :keywords="highlightKeywords" :regex="highlightRegex" />
+                <template v-else>{{ vr.row?.preview ?? '' }}</template>
               </span>
             </div>
           </div>
@@ -304,6 +368,13 @@ async function doExport(fmt: 'txt' | 'csv') {
             ↩ 回到开头
           </button>
         </div>
+      </div>
+
+      <!-- 右键「复制整行」菜单：fixed 锚定鼠标坐标，视口边缘翻转 -->
+      <div v-if="rowMenu" class="row-menu" :style="rowMenuStyle" @mousedown.stop>
+        <button class="row-menu-item" @click="copyRow">
+          {{ rowMenuCopied ? '✓ 已复制' : '⧉ 复制整行（完整原文）' }}
+        </button>
       </div>
     </div>
   </div>
@@ -397,6 +468,24 @@ async function doExport(fmt: 'txt' | 'csv') {
 .viewport { flex: 1; min-height: 0; overflow: auto; position: relative; outline: none; }
 .canvas { position: relative; min-width: 100%; }
 
+/* 视图切换/新查询后的内容淡入（180ms，克制的单一过渡）；系统减动效偏好时关闭 */
+@keyframes rows-fadein {
+  from { opacity: .35; }
+  to { opacity: 1; }
+}
+.rows { animation: rows-fadein .18s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .rows { animation: none; }
+}
+.merging-tip {
+  color: var(--amber);
+  font-size: 11.5px;
+  animation: merging-pulse 1s ease-in-out infinite;
+}
+@keyframes merging-pulse {
+  50% { opacity: .45; }
+}
+
 /* 行 */
 .row {
   position: absolute; left: 0;
@@ -409,6 +498,7 @@ async function doExport(fmt: 'txt' | 'csv') {
   border-bottom: 1px solid var(--border);
   cursor: default;
   white-space: nowrap;
+  contain: layout style; /* 渲染边界隔离：行内容变化不外溢引发容器级重排 */
 }
 .row:hover { background: var(--bg-hover); }
 .row.sel {
@@ -442,4 +532,29 @@ async function doExport(fmt: 'txt' | 'csv') {
   cursor: pointer;
 }
 .seg-tip:hover { background: var(--amber); color: #1a1407; }
+
+/* 右键「复制整行」菜单（浮层表面层级） */
+.row-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 186px;
+  padding: 4px;
+  background: var(--bg-float);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-pop);
+}
+.row-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.row-menu-item:hover { background: var(--bg-float-hover); }
 </style>

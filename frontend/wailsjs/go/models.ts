@@ -110,6 +110,7 @@ export namespace logscan {
 	    levelCounts: number[];
 	    maxLineLen: number;
 	    skippedNoTime: number;
+	    resultLimit: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new QueryStats(source);
@@ -123,6 +124,7 @@ export namespace logscan {
 	        this.levelCounts = source["levelCounts"];
 	        this.maxLineLen = source["maxLineLen"];
 	        this.skippedNoTime = source["skippedNoTime"];
+	        this.resultLimit = source["resultLimit"];
 	    }
 	}
 	export class ResultRow {
@@ -218,6 +220,10 @@ export namespace main {
 	    latest: string;
 	    hasUpdate: boolean;
 	    err: string;
+	    assetUrl: string;
+	    assetName: string;
+	    assetSize: number;
+	    sha256Url: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateInfo(source);
@@ -228,6 +234,10 @@ export namespace main {
 	        this.latest = source["latest"];
 	        this.hasUpdate = source["hasUpdate"];
 	        this.err = source["err"];
+	        this.assetUrl = source["assetUrl"];
+	        this.assetName = source["assetName"];
+	        this.assetSize = source["assetSize"];
+	        this.sha256Url = source["sha256Url"];
 	    }
 	}
 

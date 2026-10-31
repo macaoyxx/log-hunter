@@ -12,15 +12,23 @@ export function CheckUpdate():Promise<main.UpdateInfo>;
 
 export function ClearAll():Promise<void>;
 
+export function CopyLineText(arg1:number,arg2:number):Promise<void>;
+
+export function CopyText(arg1:string):Promise<void>;
+
 export function ExportResults(arg1:string,arg2:string):Promise<number>;
 
 export function GetConfig():Promise<appconf.Conf>;
 
 export function GetContext(arg1:number,arg2:number,arg3:number,arg4:number):Promise<Array<logscan.ContextRow>>;
 
+export function GetLineText(arg1:number,arg2:number):Promise<string>;
+
 export function GetResults(arg1:number,arg2:number):Promise<Array<logscan.ResultRow>>;
 
 export function GetVersion():Promise<string>;
+
+export function LastStartupCost():Promise<string>;
 
 export function ListFiles():Promise<Array<logscan.FileEntry>>;
 
@@ -30,6 +38,10 @@ export function Query(arg1:main.QuerySpecJSON):Promise<logscan.QueryStats>;
 
 export function RemoveFile(arg1:number):Promise<void>;
 
+export function ReportStartupReady():Promise<void>;
+
+export function Restart():Promise<void>;
+
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
 
 export function SaveHistory(arg1:string,arg2:string):Promise<void>;
@@ -37,5 +49,7 @@ export function SaveHistory(arg1:string,arg2:string):Promise<void>;
 export function SetMerged(arg1:boolean):Promise<void>;
 
 export function SetTheme(arg1:string):Promise<void>;
+
+export function StartUpdate():Promise<void>;
 
 export function ValidateRegex(arg1:string):Promise<string>;

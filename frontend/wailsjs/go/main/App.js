@@ -18,6 +18,14 @@ export function ClearAll() {
   return window['go']['main']['App']['ClearAll']();
 }
 
+export function CopyLineText(arg1, arg2) {
+  return window['go']['main']['App']['CopyLineText'](arg1, arg2);
+}
+
+export function CopyText(arg1) {
+  return window['go']['main']['App']['CopyText'](arg1);
+}
+
 export function ExportResults(arg1, arg2) {
   return window['go']['main']['App']['ExportResults'](arg1, arg2);
 }
@@ -30,12 +38,20 @@ export function GetContext(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetContext'](arg1, arg2, arg3, arg4);
 }
 
+export function GetLineText(arg1, arg2) {
+  return window['go']['main']['App']['GetLineText'](arg1, arg2);
+}
+
 export function GetResults(arg1, arg2) {
   return window['go']['main']['App']['GetResults'](arg1, arg2);
 }
 
 export function GetVersion() {
   return window['go']['main']['App']['GetVersion']();
+}
+
+export function LastStartupCost() {
+  return window['go']['main']['App']['LastStartupCost']();
 }
 
 export function ListFiles() {
@@ -54,6 +70,14 @@ export function RemoveFile(arg1) {
   return window['go']['main']['App']['RemoveFile'](arg1);
 }
 
+export function ReportStartupReady() {
+  return window['go']['main']['App']['ReportStartupReady']();
+}
+
+export function Restart() {
+  return window['go']['main']['App']['Restart']();
+}
+
 export function SaveFileDialog(arg1, arg2) {
   return window['go']['main']['App']['SaveFileDialog'](arg1, arg2);
 }
@@ -68,6 +92,10 @@ export function SetMerged(arg1) {
 
 export function SetTheme(arg1) {
   return window['go']['main']['App']['SetTheme'](arg1);
+}
+
+export function StartUpdate() {
+  return window['go']['main']['App']['StartUpdate']();
 }
 
 export function ValidateRegex(arg1) {

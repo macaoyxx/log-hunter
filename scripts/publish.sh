@@ -15,7 +15,17 @@ if [[ ! "$Version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 tag="v$Version"
-notes="LogHunter $tag。变更详见仓库 docs/iterations/$Version/README.md。"
+# 发布说明：列出本版本内容要点（自动提取迭代 README 的「范围」节），
+# 不得只写版本号 + 文档链接——Release 页要一眼看清本版改了什么（AGENTS.md 发版规则）。
+# 迭代目录名带 v 前缀（docs/iterations/v0.0.3/），与 $Version（0.0.3）差一个 v
+iter_md="docs/iterations/v$Version/README.md"
+if [[ -f "$iter_md" ]]; then
+  notes="LogHunter $tag 变更要点：
+$(awk '/^## 范围/{f=1;next} /^## /{f=0} f' "$iter_md" | sed -e '/^[[:space:]]*$/d')"
+else
+  echo "未找到迭代文档 $iter_md，发布说明需要它生成；请先完成迭代归档" >&2
+  exit 1
+fi
 
 # 1. 先本地打包（构建 + zip，产物落在 release/<版本>/）
 "$(dirname "$0")/package.sh" "$Version"

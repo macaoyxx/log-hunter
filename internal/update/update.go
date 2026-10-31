@@ -152,22 +152,59 @@ func ExtractExe(zipPath, destPath string) error {
 }
 
 // Apply 替换当前 exe：Windows 运行中的 exe 不可覆盖但可改名——旧 exe 改名 .old
-// 让位、新 exe 落位原名；第二步失败自动回滚保持可启动。残留的 .old 由新进程
-// 启动时 CleanupOld 清理（旧进程退出释放文件锁有时差）
+// 让位、新 exe 落位原名；第二步失败自动回滚保持可启动。落位优先同盘原子 rename，
+// 跨盘卷 rename 会报错（更新临时目录在系统盘、exe 可能装在任意盘）——降级为
+// 复制到 exe 同盘的 .new 临时名再原子改名。残留的 .old 由新进程启动时 CleanupOld
+// 清理（旧进程退出释放文件锁有时差）
 func Apply(newExe, currentExe string) error {
 	old := currentExe + ".old"
 	_ = os.Remove(old) // 清掉上次更新未及清理的残留
 	if err := os.Rename(currentExe, old); err != nil {
 		return fmt.Errorf("旧版本让位失败: %w", err)
 	}
-	if err := os.Rename(newExe, currentExe); err != nil {
+	rollback := func(cause error) error {
 		if rbErr := os.Rename(old, currentExe); rbErr != nil {
 			return fmt.Errorf("新版落位失败且回滚失败（请手动把 %s 改回 %s）: 落位 %v / 回滚 %v",
-				old, currentExe, err, rbErr)
+				old, currentExe, cause, rbErr)
 		}
-		return fmt.Errorf("新版落位失败（已回滚旧版本）: %w", err)
+		return fmt.Errorf("新版落位失败（已回滚旧版本）: %w", cause)
+	}
+	if err := os.Rename(newExe, currentExe); err == nil {
+		return nil // 同盘：一步到位
+	}
+	// 跨盘卷：复制到 exe 同盘临时名（.new），再同盘原子改名落位
+	tmp := currentExe + ".new"
+	if cerr := copyFile(newExe, tmp); cerr != nil {
+		_ = os.Remove(tmp)
+		return rollback(cerr)
+	}
+	if rerr := os.Rename(tmp, currentExe); rerr != nil {
+		_ = os.Remove(tmp)
+		return rollback(rerr)
 	}
 	return nil
+}
+
+// copyFile 复制文件内容（写完 Sync 落盘——exe 落位完整性；调用方负责清理）
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err = out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // CleanupOld 删除上次更新残留的 .old（新进程启动时调用；旧进程退出释放文件锁

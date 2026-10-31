@@ -147,3 +147,39 @@ func TestDownload(t *testing.T) {
 		t.Fatal("取消后不应有产物")
 	}
 }
+
+// TestCopyFile 复制内容一致性（跨盘落位降级路径的基石）
+func TestCopyFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	payload := []byte("LogHunter update payload — 跨盘落位测试内容")
+	if err := os.WriteFile(src, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "dst.bin")
+	if err := copyFile(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dst)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("复制内容不一致: %q", got)
+	}
+}
+
+// TestApplyViaCopyPath 走「rename 失败→copy 兜底」路径：把 newExe 放在已删除的
+// 路径使第一步 rename 失败不可行——改为直接验证 copy+rename 组合：模拟跨盘
+// 场景难（需双卷），这里验证 Apply 在同盘 copy 兜底可用性由 TestApplyAndRollback
+// 覆盖正常路径、copyFile 覆盖复制正确性，跨盘组合为代码路径直查
+func TestApplyNewMissingRollback(t *testing.T) {
+	dir := t.TempDir()
+	cur := filepath.Join(dir, "app.exe")
+	os.WriteFile(cur, []byte("OLD"), 0644)
+	// newExe 不存在：rename 失败 → copyFile 也失败 → 回滚保持旧版可启动
+	if err := Apply(filepath.Join(dir, "missing.exe"), cur); err == nil {
+		t.Fatal("应报落位失败")
+	}
+	cb, _ := os.ReadFile(cur)
+	if string(cb) != "OLD" {
+		t.Fatalf("回滚后应保持旧内容: %q", cb)
+	}
+}

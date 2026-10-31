@@ -86,10 +86,23 @@ function pickDay(d: number) {
   apply(fmtDate(d))
 }
 
+// 归一：1-2 位数字且不超过 max 返回补零两位串，否则 null（非法输入）
+function normNum(v: string, max: number): string | null {
+  return /^\d{1,2}$/.test(v) && +v <= max ? v.padStart(2, '0') : null
+}
+
 function apply(date?: string) {
   const ds = date ?? selDate.value
   if (!ds) return
-  const h = hour.value.padStart(2, '0'), mi = minute.value.padStart(2, '0'), s = second.value.padStart(2, '0')
+  // 非法输入（清空/非数字/越界，如 "ab"、时 25）回退 model 现值对应字段（无则 00），
+  // 防止拼出 "2026-10-31Tab:30" 之类脏时间串写入 v-model、查询时报格式错误
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(model.value || '')
+  const h = normNum(hour.value, 23) ?? m?.[4] ?? '00'
+  const mi = normNum(minute.value, 59) ?? m?.[5] ?? '00'
+  const s = normNum(second.value, 59) ?? m?.[6] ?? '00'
+  hour.value = h
+  minute.value = mi
+  second.value = s // 输入框同步回显归一后的值
   model.value = useSec.value ? `${ds}T${h}:${mi}:${s}` : `${ds}T${h}:${mi}`
 }
 
@@ -120,16 +133,19 @@ const display = computed(() => (model.value || '').replace('T', ' '))
           @click="c && pickDay(c)">{{ c || '' }}</span>
       </div>
       <div class="tp-time">
-        <input class="tp-num" type="text" v-model="hour" maxlength="2" /> :
-        <input class="tp-num" type="text" v-model="minute" maxlength="2" />
+        <!-- 时/分/秒修改即写回 v-model（失焦/回车触发 change）：修复此前只在点日期格时
+             才 apply，导致改完时分点「好」关闭后值仍是打开时旧值（看似无法改时分）。
+             注意 apply() 必须显式空参调用——直接引用 apply 会把原生 Event 当 date 传入 -->
+        <input class="tp-num" type="text" v-model="hour" maxlength="2" @change="apply()" /> :
+        <input class="tp-num" type="text" v-model="minute" maxlength="2" @change="apply()" />
         <template v-if="useSec"> :
-          <input class="tp-num" type="text" v-model="second" maxlength="2" />
+          <input class="tp-num" type="text" v-model="second" maxlength="2" @change="apply()" />
         </template>
-        <button class="tp-sec-toggle ghost" @click="useSec = !useSec" :title="useSec ? '精确到分' : '精确到秒'">
+        <button class="tp-sec-toggle ghost" @click="useSec = !useSec; apply()" :title="useSec ? '精确到分' : '精确到秒'">
           {{ useSec ? '−秒' : '+秒' }}
         </button>
         <span class="tp-spacer"></span>
-        <button class="tp-ok primary" @click="open = false">好</button>
+        <button class="tp-ok primary" @click="apply(); open = false">好</button>
       </div>
     </div>
   </div>

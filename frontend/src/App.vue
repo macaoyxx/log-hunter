@@ -337,7 +337,6 @@ function openContext(fileId: number, offset: number) {
 <template>
   <div class="app">
     <header class="brand">
-      <span class="logo">▮</span>
       <span class="name">LogHunter</span>
       <span class="tag">本地日志排查 · 拖进来就查</span>
       <div ref="menuRoot" class="brand-ctrl">
@@ -463,7 +462,6 @@ function openContext(fileId: number, offset: number) {
   gap: 8px;
   user-select: none;
 }
-.logo { color: var(--amber); font-size: 15px; }
 .name {
   font-family: var(--mono);
   font-weight: 700;

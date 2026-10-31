@@ -278,7 +278,12 @@ function doQuery(spec: main.QuerySpecJSON) {
   runQuery(spec)
 }
 
+// 查询请求代次：旧请求迟到的 catch/finally 不动新查询状态（停止后立刻重查时，
+// 旧 finally 会误清 querying 导致按钮提前恢复、可并发触发下一次）
+let querySeq = 0
+
 async function runQuery(spec: main.QuerySpecJSON) {
+  const seq = ++querySeq
   querying.value = true
   queryError.value = ''
   queryProg.value = null
@@ -289,10 +294,16 @@ async function runQuery(spec: main.QuerySpecJSON) {
   try {
     stats.value = await Query(spec)
   } catch (e) {
-    queryError.value = String(e)
+    // 用户主动「停止」触发的取消（后端 context.Canceled）不是错误——静默归位，
+    // 不打扰；查询中按钮已是「停止」，快速连点极易触发，属合法操作
+    if (seq === querySeq && !String(e).includes('context canceled')) {
+      queryError.value = String(e)
+    }
   } finally {
-    querying.value = false
-    queryProg.value = null
+    if (seq === querySeq) {
+      querying.value = false
+      queryProg.value = null
+    }
   }
 }
 

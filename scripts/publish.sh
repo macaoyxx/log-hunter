@@ -63,9 +63,9 @@ else
 fi
 git push origin "refs/tags/$tag"
 
-# 4. gh 创建 Release 并上传产物；gh 不可用时降级为手动上传指引（不算失败）
+# 4. gh 创建 Release 并上传产物（zip + sha256 校验文件）；gh 不可用时降级为手动上传指引（不算失败）
 if command -v gh >/dev/null 2>&1; then
-  gh release create "$tag" "$zip_path" --title "$tag" --notes "$notes"
+  gh release create "$tag" "$zip_path" "$zip_path.sha256" --title "$tag" --notes "$notes"
   echo "已发布: https://github.com/macaoyxx/log-hunter/releases/tag/$tag"
 else
   echo "gh CLI 不可用，tag 已推送。手动上传：https://github.com/macaoyxx/log-hunter/releases/new （选择 tag $tag，拖入 $zip_path）"

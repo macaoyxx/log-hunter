@@ -40,7 +40,16 @@ if [[ ! -f "$zip_path" ]]; then
   exit 1
 fi
 
-# 5. 删除临时文件，目录内只留 zip
+# 5. 删除临时文件，目录内只留 zip 与其校验文件
 rm -f "$exe"
 
+# 6. 生成 sha256 校验文件（随 Release 发布；应用内自动更新下载后强制校验——
+#    未签名 exe 的下载链完整性靠它兜底）。格式沿用 sha256sum："哈希  文件名"
+sha256sum "$zip_path" > "$zip_path.sha256"
+if [[ ! -s "$zip_path.sha256" ]]; then
+  echo "sha256 生成失败" >&2
+  exit 1
+fi
+
 echo "打包完成: $zip_path"
+echo "校验文件: $zip_path.sha256"

@@ -61,9 +61,9 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 ## 其他
 
 - 远端仓库 `https://github.com/macaoyxx/log-hunter`（main 分支）；`build/bin`、`frontend/dist`、`node_modules`、`release/` 已在 `.gitignore`。
-- **发版脚本**（bash 跨平台，产物不进 git）：`scripts/package.sh <x.y.z>` 仅本地打包（ldflags 注入版本，Go 标准库压缩，`release/<版本>/` 只留 zip）；`scripts/publish.sh <x.y.z>` 先打包再发布，内置终端确认门（仅用户亲自跑脚本时生效，AI 代跑不得代答）。
-- **发布铁律（用户定版）**：发布必须以**用户的显式发布指令**为前提（对话中说「发布/发版」即为确认，AI 据此执行全程）；**无指令绝不得自行发布**。发版流程固定：迭代收尾 → 合并 main（ff-only）→ push main → **基于 main 打 tag**（`git push origin refs/tags/vX.Y.Z`，防 tag/分支同名歧义）→ gh release create（产物 zip）→ **切回开发迭代分支**。
-- **Release Notes 必须列内容要点**：发布说明由 `publish.sh` 自动提取迭代 README 的「范围」节生成（本版变更要点清单），**不得只写版本号 + 文档链接**——Release 页要一眼看清本版改了什么；因此迭代 README 的「范围」节按发布说明口径写精炼要点。
+- **发版脚本**（bash 跨平台，产物不进 git）：`scripts/package.sh <x.y.z>` 仅本地打包（ldflags 注入版本，Go 标准库压缩，`release/<版本>/` 只留 zip）；`scripts/publish.sh <x.y.z>` 先打包再发布，内置终端确认门，供**用户亲自手动发版**用。
+- **发布铁律（用户定版，2026-10-31 更新执行方式）**：发布必须以**用户的显式发布指令**为前提（对话中说「发布/发版」即为确认），**无指令绝不得自行发布**。收到指令后由 **AI 执行全程**：迭代收尾 → 合并 main（ff-only）→ push main → 基于 main 打 tag（`git push origin refs/tags/vX.Y.Z`，防 tag/分支同名歧义）→ gh release create（产物 zip，notes 取迭代 README「范围」节要点）→ 切回开发迭代分支。AI 代发**不跑 publish.sh**（其确认门靠终端交互，对话指令即确认，不绕答脚本），按上述步骤分步执行、全程可见。
+- **Release Notes 必须列内容要点**：发布说明取迭代 README 的「范围」节（本版变更要点清单），**不得只写版本号 + 文档链接**——Release 页要一眼看清本版改了什么；因此迭代 README 的「范围」节按发布说明口径写精炼要点。
 - gh CLI 已装（`C:\Program Files\GitHub CLI`，Git Bash 需 `export PATH` 追加）并登录 macaoyxx。
 - **GitHub 直连间歇抖动**：git push / gh 命令偶发 connection reset，重试即可，勿当成配置问题。
 - `frontend/package.json.md5` 是 Wails 的依赖指纹缓存，勿手工编辑。

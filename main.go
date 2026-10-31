@@ -15,7 +15,7 @@ var assets embed.FS
 
 // version 版本号：默认值为「当前迭代号-dev」（每轮迭代开始时 bump）；
 // 发版由 release.ps1 经 -ldflags "-X main.version=x.y.z" 覆盖为正式号
-var version = "0.0.8-dev"
+var version = "0.0.9-dev"
 
 // procStart 进程启动时刻（启动耗时埋点起点）
 var procStart = time.Now()

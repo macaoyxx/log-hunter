@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff, BrowserOpenURL } from '../wailsjs/runtime/runtime'
 import {
   AddFiles, ClearAll, ListFiles, Query, Cancel, RemoveFile,
-  GetVersion, CheckUpdate, GetConfig, SetTheme,
+  GetVersion, CheckUpdate, GetConfig, SetTheme, SetMerged,
 } from '../wailsjs/go/main/App'
 import { logscan, main } from '../wailsjs/go/models'
 import FileBar from './components/FileBar.vue'
@@ -23,6 +23,12 @@ const queryProg = ref<{ scanned: number; total: number; matched: number } | null
 const stats = ref<logscan.QueryStats | null>(null)
 const queryError = ref('')
 const fileNotice = ref('') // 加载提示（zip 内跳过项等，非错误）
+
+// 结果视图模式：false=平铺（默认）；true=按时间归并（后端重排，不重扫文件）
+const mergedMode = ref(false)
+// 勾选中的无时间格式文件名（合并视图置尾提示用）
+const noTimeNames = computed(() =>
+  files.value.filter(f => !f.hasTime && selected.value.has(f.id)).map(f => f.name))
 
 // 最近一次查询的文本条件（命中高亮用）
 const hlKeywords = ref<string[]>([])
@@ -250,6 +256,18 @@ function levelClick(lv: number) {
   queryBarRef.value?.addLevelAndSearch(lv)
 }
 
+// 切换结果视图（平铺/时间合并）：先等后端重排完成再更新状态，
+// 触发结果表清缓存重拉——避免 GetResults 赶在重排前拿到旧序数据
+async function setMerged(m: boolean) {
+  if (m === mergedMode.value) return
+  try {
+    await SetMerged(m)
+    mergedMode.value = m
+  } catch (e) {
+    queryError.value = '切换视图模式失败：' + e
+  }
+}
+
 function openContext(fileId: number, offset: number) {
   if (!fileNameMap.value.has(fileId)) return // 数据未就绪不打开，避免“文件不存在”
   ctxTarget.value = { fileId, offset }
@@ -308,7 +326,8 @@ function openContext(fileId: number, offset: number) {
       :stats="stats" :querying="querying" :progress="queryProg"
       :file-count="files.length" :file-names="fileNameMap"
       :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"
-      @open-context="openContext" @level-click="levelClick"
+      :merged="mergedMode" :no-time-names="noTimeNames"
+      @open-context="openContext" @level-click="levelClick" @toggle-merged="setMerged"
     />
     <ContextPanel v-if="ctxTarget" :target="ctxTarget" :file-name="fileNameMap.get(ctxTarget.fileId)!"
       :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"

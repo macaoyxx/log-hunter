@@ -123,6 +123,12 @@ func (a *App) GetResults(offset, limit int) []logscan.ResultRow {
 	return a.session.GetResults(offset, limit)
 }
 
+// SetMerged 切换结果视图模式：false=平铺（文件加入序+行号），true=按时间归并；
+// 有结果时后端即时重排，不重新扫描文件
+func (a *App) SetMerged(merged bool) {
+	a.session.SetMerged(merged)
+}
+
 // GetContext 取指定行的上下文
 func (a *App) GetContext(fileID, offset int64, before, after int64) ([]logscan.ContextRow, error) {
 	return a.session.GetContext(fileID, offset, before, after)

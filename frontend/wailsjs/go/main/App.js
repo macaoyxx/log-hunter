@@ -62,6 +62,10 @@ export function SaveHistory(arg1, arg2) {
   return window['go']['main']['App']['SaveHistory'](arg1, arg2);
 }
 
+export function SetMerged(arg1) {
+  return window['go']['main']['App']['SetMerged'](arg1);
+}
+
 export function SetTheme(arg1) {
   return window['go']['main']['App']['SetTheme'](arg1);
 }

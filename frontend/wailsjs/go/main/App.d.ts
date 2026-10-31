@@ -34,6 +34,8 @@ export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
 
 export function SaveHistory(arg1:string,arg2:string):Promise<void>;
 
+export function SetMerged(arg1:boolean):Promise<void>;
+
 export function SetTheme(arg1:string):Promise<void>;
 
 export function ValidateRegex(arg1:string):Promise<string>;

@@ -109,6 +109,7 @@ export namespace logscan {
 	    costMs: number;
 	    levelCounts: number[];
 	    maxLineLen: number;
+	    skippedNoTime: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new QueryStats(source);
@@ -121,6 +122,7 @@ export namespace logscan {
 	        this.costMs = source["costMs"];
 	        this.levelCounts = source["levelCounts"];
 	        this.maxLineLen = source["maxLineLen"];
+	        this.skippedNoTime = source["skippedNoTime"];
 	    }
 	}
 	export class ResultRow {

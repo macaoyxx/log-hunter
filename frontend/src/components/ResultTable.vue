@@ -12,10 +12,13 @@ const props = defineProps<{
   fileNames: Map<number, string>
   highlightKeywords: string[]
   highlightRegex: string
+  merged: boolean
+  noTimeNames: string[]
 }>()
 const emit = defineEmits<{
   (e: 'open-context', fileId: number, offset: number): void
   (e: 'level-click', level: number): void
+  (e: 'toggle-merged', merged: boolean): void
 }>()
 
 const ROW_H = 30
@@ -102,18 +105,23 @@ async function loadVisible() {
   }
 }
 
-// 新查询：清缓存、回段首、主动拉首屏
-watch(() => props.stats, async s => {
+// 视图重置：清缓存、回段首；pull=true 时主动拉首屏（新查询 / 切换视图模式共用）
+async function resetView(pull: boolean) {
   rowsCache.value = new Map()
   fetchSeq++
   selIdx.value = -1
   segStart.value = 0
   viewport.value?.scrollTo({ top: 0, left: 0 })
   scrollTop.value = 0
-  if (!s || s.total === 0) return
+  if (!pull) return
   await nextTick()
   loadVisible()
-})
+}
+
+// 新查询：清缓存、回段首、主动拉首屏
+watch(() => props.stats, s => resetView(!!s && s.total > 0))
+// 视图模式切换（平铺/时间合并）：后端已重排完成，清缓存按新序重拉
+watch(() => props.merged, () => resetView(total.value > 0))
 watch(visible, () => loadVisible())
 
 let resizeObs: ResizeObserver | null = null
@@ -224,7 +232,16 @@ async function doExport(fmt: 'txt' | 'csv') {
   <div class="result">
     <div v-if="stats" class="statusbar">
       <span class="hit">找到 <b>{{ stats.total.toLocaleString() }}</b> 条<span class="cost">· {{ stats.costMs }} ms</span></span>
+      <span class="viewswitch" role="group" title="多文件结果的排列方式：平铺=按拖入顺序逐文件拼接；时间合并=按日志时间归并成单一时间线（无时间戳的行跟随上一条有时间日志，无时间文件置尾）">
+        <button :class="{ on: !merged }" :disabled="querying" @click="emit('toggle-merged', false)">平铺</button>
+        <button :class="{ on: merged }" :disabled="querying" @click="emit('toggle-merged', true)">时间合并</button>
+      </span>
       <span v-if="stats.truncated" class="trunc" title="命中过多，只保留前 200 万条">⚠ 已截断</span>
+      <span v-if="merged && noTimeNames.length" class="notime" :title="'无时间列，命中置尾：\n' + noTimeNames.join('\n')">
+        ⚠ {{ noTimeNames.length }} 个文件无时间戳 · 置尾
+      </span>
+      <span v-if="stats.skippedNoTime > 0" class="notime"
+        title="这些文件没有时间列，无法参与时间范围筛选；想查它们请清空时间条件">已跳过 {{ stats.skippedNoTime }} 个无时间文件</span>
       <span class="lvlstats">
         <button v-for="c in levelChips" :key="c.lv" class="lvl-stat" :class="'lvlbtn-' + c.lv"
           :title="`点击只看 ${c.name}`" @click="emit('level-click', c.lv)">
@@ -312,6 +329,25 @@ async function doExport(fmt: 'txt' | 'csv') {
 .hit b { color: var(--amber); font-size: 14px; font-family: var(--mono); }
 .cost { color: var(--text-dim); font-family: var(--mono); margin-left: 4px; font-size: 11.5px; }
 .trunc { color: var(--lvl-3-fg); }
+.notime { color: var(--text-dim); font-size: 11.5px; }
+/* 视图模式切换：两态分段，激活态沿用琥珀选中惯例（同日历选中格/段末按钮） */
+.viewswitch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.viewswitch button {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.viewswitch button:hover:not(.on):not(:disabled) { background: var(--bg-hover); }
+.viewswitch button.on { background: var(--amber); color: #1a1407; font-weight: 700; }
+.viewswitch button:disabled { opacity: .5; cursor: default; }
 .spacer { flex: 1; }
 .dim { color: var(--text-dim); }
 .lvlstats { display: flex; gap: 4px; }

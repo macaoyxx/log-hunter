@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"log-hunter/internal/appconf"
@@ -25,8 +26,12 @@ type App struct {
 	ctx       context.Context
 	session   *logscan.Session
 	conf      *appconf.Store
-	procStart time.Time // 进程启动时刻（埋点起点，main 传入）
-	startupAt time.Time // Wails OnStartup 时刻（埋点中点）
+	procStart time.Time    // 进程启动时刻（埋点起点，main 传入）
+	startupAt time.Time    // Wails OnStartup 时刻（埋点中点）
+	winShowing atomic.Bool // 显示动作防重（只允许一次 WindowShow 发起）
+	winShown   atomic.Bool // 窗口已显示且稳定（显示后留 300ms 消化焦点消息再置位；
+	                       // 对话框弹出前必须等待它——窗口显示在途撞上文件对话框
+	                       // 模态会让 WebView2 Focus 报参数错直接 Fatal 闪退）
 }
 
 // NewApp 创建应用实例；配置存储打开失败降级为内存态（不阻断启动）
@@ -51,15 +56,40 @@ func (a *App) startup(ctx context.Context) {
 	}()
 	go func() {
 		time.Sleep(3 * time.Second)
-		runtime.WindowShow(ctx)
+		// 仅当前端从未发起显示时兜底——无条件显示会撞上用户刚弹出的系统模态
+		// 对话框（启动秒点「从电脑选择」的 3 秒窗口），WebView2 Focus 致命闪退
+		if !a.winShowing.Load() {
+			a.showWindowOnce()
+		}
 	}()
+}
+
+// showWindowOnce 发起一次窗口显示，并在显示后留 300ms 焦点消息消化期再置
+// 「稳定」标记——对话框弹出前等待该标记，杜绝显示在途与模态对话框重叠
+func (a *App) showWindowOnce() {
+	if !a.winShowing.CompareAndSwap(false, true) {
+		return
+	}
+	runtime.WindowShow(a.ctx)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		a.winShown.Store(true)
+	}()
+}
+
+// waitWindowShown 等待窗口显示稳定（上限 4s：显示从未发起时由 3s 兜底补位后放行）
+func (a *App) waitWindowShown() {
+	deadline := time.Now().Add(4 * time.Second)
+	for !a.winShown.Load() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // ReportStartupReady 前端界面就绪上报：显示窗口（隐藏启动的正式显示点），并把
 // 启动耗时埋点追加写入 data/startup.log（进程→OnStartup→界面就绪两段区间；
 // 写失败静默——诊断数据不该影响启动）
 func (a *App) ReportStartupReady() {
-	runtime.WindowShow(a.ctx)
+	a.showWindowOnce()
 	readyAt := time.Now()
 	procToStartup := a.startupAt.Sub(a.procStart).Milliseconds()
 	startupToReady := readyAt.Sub(a.startupAt).Milliseconds()
@@ -230,6 +260,7 @@ func (a *App) ExportResults(path, format string) (int, error) {
 
 // SaveFileDialog 导出用：弹出系统保存对话框，返回所选路径（取消返回空串）
 func (a *App) SaveFileDialog(defaultName string, ext string) string {
+	a.waitWindowShown() // 窗口显示在途弹对话框会撞模态焦点消息导致闪退
 	p, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		DefaultFilename: defaultName,
 		Filters: []runtime.FileFilter{
@@ -244,6 +275,7 @@ func (a *App) SaveFileDialog(defaultName string, ext string) string {
 
 // PickFiles 弹系统多选文件对话框，返回所选路径（取消返回空数组）
 func (a *App) PickFiles() []string {
+	a.waitWindowShown() // 窗口显示在途弹对话框会撞模态焦点消息导致闪退
 	paths, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "选择日志文件",
 		Filters: []runtime.FileFilter{

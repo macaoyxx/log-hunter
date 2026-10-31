@@ -218,14 +218,15 @@ func TestRunQueryTimeAndLevel(t *testing.T) {
 	defer s.ClearAll()
 	e := s.Files()[0]
 
-	// 时间范围：10:23:45.200 起 → 只剩 WARN/ERROR/INFO(done)（45.123 的 INFO 排除，堆栈行因无时间被排除）
+	// 时间范围：10:23:45.200 起 → 45.123 的 INFO 排除；ERROR 的 2 行堆栈续行
+	// 向前继承 ERROR(46.001) 锚点一并保留 → WARN + ERROR + 堆栈×2 + INFO(done) = 5 条
 	start := time.Date(2024, 1, 15, 10, 23, 45, 200000000, time.Local).UnixNano()
 	stats, err := s.RunQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}, TSStart: start}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Total != 3 {
-		t.Fatalf("时间过滤期望 3 条: %d", stats.Total)
+	if stats.Total != 5 {
+		t.Fatalf("时间过滤期望 5 条: %d", stats.Total)
 	}
 
 	// 级别过滤
@@ -548,5 +549,237 @@ func TestAddZip(t *testing.T) {
 	s.ClearAll()
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Error("清空后临时根应删除")
+	}
+}
+
+// TestFilterCandidatesAnchor 单元级验证时间筛选的锚点继承：
+// 行0 无锚点（文件开头无时间）、行2/3 继承行1 的 100、行5 继承行4 的 200
+func TestFilterCandidatesAnchor(t *testing.T) {
+	ix := &LineIndex{
+		offsets: []int64{0, 10, 20, 30, 40, 50},
+		ts:      []int64{0, 100, 0, 0, 200, 0},
+		levels:  []int8{-1, -1, -1, -1, -1, -1},
+	}
+	// 范围 [100,100]：行1 及继承 100 的行2/3；行0 无锚点排除、行4/5 超范围
+	cands := ix.filterCandidates(100, 100, nil)
+	if len(cands) != 3 || cands[0] != 1 || cands[1] != 2 || cands[2] != 3 {
+		t.Fatalf("锚点继承筛选错误: %v", cands)
+	}
+	// 范围 [150,250]：行4 及继承 200 的行5
+	cands = ix.filterCandidates(150, 250, nil)
+	if len(cands) != 2 || cands[0] != 4 || cands[1] != 5 {
+		t.Fatalf("尾部继承筛选错误: %v", cands)
+	}
+	// 锚点只影响时间判断：级别条件仍排除无级别行（语义不变）
+	cands = ix.filterCandidates(0, 0, map[Level]bool{LevelInfo: true})
+	if len(cands) != 0 {
+		t.Fatalf("级别过滤应排除全部无级别行: %v", cands)
+	}
+}
+
+// TestSetMergedTimeLine 平铺↔时间合并来回切换：两文件时间交错归并、
+// 无时间文件置尾（按加入序）、切回平铺完全恢复原序
+func TestSetMergedTimeLine(t *testing.T) {
+	logA := `2024-01-15 10:00:01.000 INFO a1
+2024-01-15 10:00:03.000 INFO a2
+2024-01-15 10:00:04.000 INFO a3
+`
+	logB := `2024-01-15 10:00:02.000 INFO b1
+2024-01-15 10:00:05.000 INFO b2
+`
+	plainDump := "select * from orders where id=1\nselect * from users\n"
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, logA), writeTemp(t, logB), writeTemp(t, plainDump)}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if len(added) != 3 {
+		t.Fatalf("应加载 3 个文件: %d", len(added))
+	}
+	allIDs := []int64{added[0].ID, added[1].ID, added[2].ID}
+	if _, err := s.RunQuery(context.Background(), &QuerySpec{FileIDs: allIDs}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.results) != 7 {
+		t.Fatalf("全览应 7 条: %d", len(s.results))
+	}
+
+	// 平铺序（默认）：A1,A2,A3,B1,B2,P1,P2
+	flatSeq := resultSeq(s.results)
+
+	// 切合并：A1,B1,A2,A3,B2 时间归并 + P1,P2 置尾
+	s.SetMerged(true)
+	want := []resultRef{
+		{added[0].ID, 1}, {added[1].ID, 1}, {added[0].ID, 2},
+		{added[0].ID, 3}, {added[1].ID, 2}, {added[2].ID, 1}, {added[2].ID, 2},
+	}
+	if got := resultSeq(s.results); !seqEqual(got, want) {
+		t.Fatalf("合并序错误:\n got  %v\n want %v", got, want)
+	}
+
+	// 切回平铺：完全恢复原序（幂等）
+	s.SetMerged(false)
+	if got := resultSeq(s.results); !seqEqual(got, flatSeq) {
+		t.Fatalf("切回平铺未恢复原序:\n got  %v\n flat %v", got, flatSeq)
+	}
+}
+
+// resultRef/resultSeq/seqEqual 结果顺序断言辅助（FileID+行号）
+type resultRef struct {
+	file   int64
+	lineNo int64
+}
+
+func resultSeq(rows []ResultRow) []resultRef {
+	out := make([]resultRef, len(rows))
+	for i, r := range rows {
+		out[i] = resultRef{r.FileID, r.LineNo}
+	}
+	return out
+}
+
+func seqEqual(a, b []resultRef) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestSetMergedStackFollows 堆栈块不被其他节点同刻的行插散：
+// 文件 C 的 ERROR(10:00:01) 带堆栈续行、文件 D 恰好也有 10:00:01 的行——
+// 稳定排序下堆栈续行（继承锚点 10:00:01）紧贴主行，D 的行排在其后。
+// （首尾补时间行是给格式探测凑命中率——堆栈占比过高整文件会被判 plain）
+func TestSetMergedStackFollows(t *testing.T) {
+	logC := `2024-01-15 10:00:00.500 INFO c0
+2024-01-15 10:00:01.000 ERROR boom
+	at com.example.C.call(C.java:1)
+	at com.example.D.run(D.java:2)
+2024-01-15 10:00:01.500 INFO c9
+`
+	logD := "2024-01-15 10:00:01.000 INFO d1\n"
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, logC), writeTemp(t, logD)}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if !added[0].HasTime {
+		t.Fatal("logC 应探测为有时间格式")
+	}
+	if _, err := s.RunQuery(context.Background(), &QuerySpec{
+		FileIDs: []int64{added[0].ID, added[1].ID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMerged(true)
+	want := []resultRef{
+		{added[0].ID, 1},                                           // c0 (00.500)
+		{added[0].ID, 2}, {added[0].ID, 3}, {added[0].ID, 4},       // ERROR + 堆栈×2（同 key 稳定序不散）
+		{added[1].ID, 1},                                           // D 的同刻行在其后（文件加入序）
+		{added[0].ID, 5},                                           // c9 (01.500)
+	}
+	if got := resultSeq(s.results); !seqEqual(got, want) {
+		t.Fatalf("堆栈块被插散:\n got  %v\n want %v", got, want)
+	}
+	// 无时间行位置归位但 TS 字段保持原值 0（时间列展示空）
+	for _, r := range s.results[2:4] {
+		if r.TS != 0 {
+			t.Fatalf("无时间行的 TS 字段不应被改写: %+v", r)
+		}
+	}
+}
+
+// TestSetMergedAutoQuery 合并模式下新查询直接按合并序产出
+func TestSetMergedAutoQuery(t *testing.T) {
+	logA := "2024-01-15 10:00:01.000 INFO a1\n2024-01-15 10:00:03.000 INFO a2\n"
+	logB := "2024-01-15 10:00:02.000 INFO b1\n"
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, logA), writeTemp(t, logB)}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	s.SetMerged(true) // 先切模式再查询
+	if _, err := s.RunQuery(context.Background(), &QuerySpec{
+		FileIDs: []int64{added[0].ID, added[1].ID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []resultRef{{added[0].ID, 1}, {added[1].ID, 1}, {added[0].ID, 2}}
+	if got := resultSeq(s.results); !seqEqual(got, want) {
+		t.Fatalf("合并模式查询应直接产出时间序:\n got  %v\n want %v", got, want)
+	}
+}
+
+// TestGetResultsMergedPreview 合并序下窗口预览补全正确性：
+// 时钟回拨文件（时间序≠offset 序）合并后按时间序展示，groupedRead 按 offset
+// 分组顺序读，每行 preview 必须对应自己的内容
+func TestGetResultsMergedPreview(t *testing.T) {
+	// 回拨日志：第 1 行时间晚于第 2 行 → 合并序 = 行2、行1（offset 反序）
+	rewind := "2024-01-15 10:00:05.000 INFO later-line\n2024-01-15 10:00:01.000 INFO early-line\n"
+	logB := "2024-01-15 10:00:03.000 INFO b1\n"
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, rewind), writeTemp(t, logB)}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if _, err := s.RunQuery(context.Background(), &QuerySpec{
+		FileIDs: []int64{added[0].ID, added[1].ID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMerged(true)
+	rows := s.GetResults(0, 3)
+	if len(rows) != 3 {
+		t.Fatalf("应取 3 条: %d", len(rows))
+	}
+	wantTexts := []string{"early-line", "b1", "later-line"}
+	for i, want := range wantTexts {
+		if !strings.Contains(rows[i].Preview, want) {
+			t.Fatalf("第 %d 行预览错误: 期望含 %q，得到 %q", i, want, rows[i].Preview)
+		}
+	}
+}
+
+// TestSkippedNoTime 时间条件跳过无时间文件的计数
+func TestSkippedNoTime(t *testing.T) {
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, stdLog), writeTemp(t, "no time line 1\nno time line 2\n")}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	allIDs := []int64{added[0].ID, added[1].ID}
+
+	// 无时间条件：都参与（6 + 2 = 8 条），不提示跳过
+	st, err := s.RunQuery(context.Background(), &QuerySpec{FileIDs: allIDs}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Total != 8 || st.SkippedNoTime != 0 {
+		t.Fatalf("无时间条件应全部参与: total=%d skipped=%d", st.Total, st.SkippedNoTime)
+	}
+
+	// 有时间条件：无时间文件跳过并计数
+	start := time.Date(2024, 1, 15, 10, 23, 45, 0, time.Local).UnixNano()
+	st, err = s.RunQuery(context.Background(), &QuerySpec{FileIDs: allIDs, TSStart: start}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Total != 6 || st.SkippedNoTime != 1 {
+		t.Fatalf("时间条件应跳过无时间文件: total=%d skipped=%d", st.Total, st.SkippedNoTime)
 	}
 }

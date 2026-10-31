@@ -65,13 +65,15 @@ type ResultRow struct {
 }
 
 // QueryStats 查询统计（LevelCounts 为 TRACE..FATAL 六级各自命中数，
-// MaxLineLen 为最长行 rune 数——前端据此撑开横向滚动宽度）
+// MaxLineLen 为最长行 rune 数——前端据此撑开横向滚动宽度；
+// SkippedNoTime 为因时间条件被跳过的无时间格式文件数，前端据此提示）
 type QueryStats struct {
-	Total       int    `json:"total"`
-	Truncated   bool   `json:"truncated"`
-	CostMs      int64  `json:"costMs"`
-	LevelCounts [6]int `json:"levelCounts"`
-	MaxLineLen  int    `json:"maxLineLen"`
+	Total         int    `json:"total"`
+	Truncated     bool   `json:"truncated"`
+	CostMs        int64  `json:"costMs"`
+	LevelCounts   [6]int `json:"levelCounts"`
+	MaxLineLen    int    `json:"maxLineLen"`
+	SkippedNoTime int    `json:"skippedNoTime"`
 }
 
 // FileProgress 文件加载进度（事件负载）
@@ -100,6 +102,7 @@ type Session struct {
 	stats   QueryStats
 	cancel  context.CancelFunc // 当前进行中的查询/索引
 	opMu    sync.Mutex         // 串行化长操作（加载/查询），避免并发扫描互相干扰
+	merged  bool               // 结果视图模式：false=平铺（默认，文件加入序+行号）；true=按时间归并
 
 	tempRoot  string           // zip 解压临时根目录（懒建，ClearAll 整体删除）
 	zipDirSeq int              // zip 子目录序号
@@ -350,6 +353,7 @@ func (s *Session) RunQuery(ctx context.Context, spec *QuerySpec, onProgress func
 	var levelCounts [6]int
 	maxLineLen := 0
 	var scannedBytes int64
+	skippedNoTime := 0
 	lastEmit := time.Now()
 
 	for _, e := range targets {
@@ -359,9 +363,10 @@ func (s *Session) RunQuery(ctx context.Context, spec *QuerySpec, onProgress func
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// 该文件不满足时间条件的快速路径：无时间列但有时间条件 → 跳过
+		// 该文件不满足时间条件的快速路径：无时间列但有时间条件 → 跳过（计数供前端提示）
 		if hasTimeCond && !e.parser.HasTime() {
 			scannedBytes += e.Size
+			skippedNoTime++
 			continue
 		}
 		matcher, err := newTextMatcher(spec.Keywords, spec.Excludes, spec.Regex, spec.KeywordAnd, e.enc)
@@ -466,8 +471,19 @@ func (s *Session) RunQuery(ctx context.Context, spec *QuerySpec, onProgress func
 		}
 	}
 
+	// 合并视图模式下按时间归并产出（收集序天然平铺，满足 sortMerged 的输入要求；
+	// opMu 已与 SetMerged 互斥，s.merged 读取无竞态）
+	if s.merged {
+		entryById := make(map[int64]*FileEntry, len(targets))
+		for _, e := range targets {
+			entryById[e.ID] = e
+		}
+		sortMerged(results, entryById)
+	}
+
 	stats := &QueryStats{Total: len(results), Truncated: truncated,
-		CostMs: time.Since(start).Milliseconds(), LevelCounts: levelCounts, MaxLineLen: maxLineLen}
+		CostMs: time.Since(start).Milliseconds(), LevelCounts: levelCounts, MaxLineLen: maxLineLen,
+		SkippedNoTime: skippedNoTime}
 	s.mu.Lock()
 	s.results = results
 	s.stats = *stats
@@ -509,7 +525,8 @@ func levelOf(e *FileEntry, li int64) int8 {
 }
 
 // GetResults 分页取结果窗口（虚拟滚动按窗口拉取）。
-// 查询期只存偏移不生成预览；此处按文件分组用顺序游标按需补全预览文本
+// 查询期只存偏移不生成预览；此处经 groupedRead 按 (FileID, Offset) 分组顺序读补全预览
+// （时间合并序下窗口内文件不再聚簇，直接按序读会退化为随机 IO，见 groupedRead 注释）
 func (s *Session) GetResults(offset, limit int) []ResultRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -527,23 +544,11 @@ func (s *Session) GetResults(offset, limit int) []ResultRow {
 	for _, e := range s.entries {
 		entryById[e.ID] = e
 	}
-	for i := 0; i < len(out); {
-		e := entryById[out[i].FileID]
-		if e == nil { // 文件已被移除：预览留空
-			i++
-			continue
+	groupedRead(out, entryById, func(e *FileEntry, i int, line []byte) {
+		if out[i].Preview == "" { // 文件已被移除的行不在回调中出现，预览留空
+			out[i].Preview = capLine(decodeLine(e.enc, line))
 		}
-		sr := &seqReader{lf: e.lf}
-		j := i
-		for ; j < len(out) && out[j].FileID == e.ID; j++ {
-			if out[j].Preview == "" {
-				if line, err := sr.line(out[j].Offset); err == nil {
-					out[j].Preview = capLine(decodeLine(e.enc, line))
-				}
-			}
-		}
-		i = j
-	}
+	})
 	return out
 }
 
@@ -579,23 +584,12 @@ func (s *Session) ExportResults(path, format string) (int, error) {
 	for _, e := range entries {
 		entryById[e.ID] = e
 	}
-	// 补全每行完整文本
+	// 补全每行完整文本（不截断）；经 groupedRead 按 (FileID, Offset) 分组顺序读，
+	// 时间合并序下导出顺序仍跟随当前视图，读盘路径保持顺序
 	fullText := make([]string, len(rows))
-	for i := 0; i < len(rows); {
-		e := entryById[rows[i].FileID]
-		if e == nil {
-			i++
-			continue
-		}
-		sr := &seqReader{lf: e.lf}
-		j := i
-		for ; j < len(rows) && rows[j].FileID == e.ID; j++ {
-			if line, err := sr.line(rows[j].Offset); err == nil {
-				fullText[j] = decodeLine(e.enc, line)
-			}
-		}
-		i = j
-	}
+	groupedRead(rows, entryById, func(e *FileEntry, i int, line []byte) {
+		fullText[i] = decodeLine(e.enc, line)
+	})
 
 	f, err := os.Create(path)
 	if err != nil {

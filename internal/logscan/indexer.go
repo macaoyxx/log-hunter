@@ -37,17 +37,26 @@ func (ix *LineIndex) TSRange() (min, max int64) {
 }
 
 // filterCandidates 按时间范围与级别筛选候选行下标（0-based）；无时间/级别条件时返回 nil 表示不过滤。
-// 无时间戳的行（多行堆栈）在时间过滤下被排除——它们附属于上一条有时间戳的日志
+// 无时间戳的行（多行堆栈、SQL 续行）向前继承同文件上一条非零时间戳作锚点：锚点在范围内则保留
+// （主行命中时其续行不丢）；文件开头无锚点的行仍排除。级别过滤语义不变——只作用于有级别的行
 func (ix *LineIndex) filterCandidates(tsStart, tsEnd int64, levels map[Level]bool) []int32 {
 	if tsStart == 0 && tsEnd == 0 && levels == nil {
 		return nil
 	}
 	out := make([]int32, 0, len(ix.offsets)/8+8)
+	lastTS := int64(0) // 上一条非零时间戳（无时间行的继承锚点）
 	for i, t := range ix.ts {
-		if tsStart > 0 && (t == 0 || t < tsStart) {
+		if t > 0 {
+			lastTS = t
+		}
+		effective := t
+		if effective == 0 {
+			effective = lastTS
+		}
+		if tsStart > 0 && (effective == 0 || effective < tsStart) {
 			continue
 		}
-		if tsEnd > 0 && (t == 0 || t > tsEnd) {
+		if tsEnd > 0 && (effective == 0 || effective > tsEnd) {
 			continue
 		}
 		if levels != nil && !levels[Level(ix.levels[i])] {

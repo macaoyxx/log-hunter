@@ -530,7 +530,7 @@ function openContext(fileId: number, offset: number) {
   position: fixed;
   inset: 0;
   z-index: 300;
-  background: rgba(0, 0, 0, .45);
+  background: var(--mask);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -560,7 +560,7 @@ function openContext(fileId: number, offset: number) {
   position: fixed;
   inset: 0;
   z-index: 300;
-  background: rgba(0, 0, 0, .45);
+  background: var(--mask);
   display: flex;
   align-items: center;
   justify-content: center;

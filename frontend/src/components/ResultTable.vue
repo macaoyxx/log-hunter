@@ -440,7 +440,7 @@ async function doExport(fmt: 'txt' | 'csv') {
   cursor: pointer;
 }
 .viewswitch button:hover:not(.on):not(:disabled) { background: var(--bg-hover); }
-.viewswitch button.on { background: var(--amber); color: #1a1407; font-weight: 700; }
+.viewswitch button.on { background: var(--amber); color: var(--amber-ink); font-weight: 700; }
 .viewswitch button:disabled { opacity: .5; cursor: default; }
 .spacer { flex: 1; }
 .dim { color: var(--text-dim); }
@@ -554,7 +554,7 @@ async function doExport(fmt: 'txt' | 'csv') {
   border-radius: 18px;
   cursor: pointer;
 }
-.seg-tip:hover { background: var(--amber); color: #1a1407; }
+.seg-tip:hover { background: var(--amber); color: var(--amber-ink); }
 
 /* 右键「复制整行」菜单（浮层表面层级） */
 .row-menu {

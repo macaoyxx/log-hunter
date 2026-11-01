@@ -207,7 +207,7 @@ const display = computed(() => (model.value || '').replace('T', ' '))
 .tp-cell.empty { cursor: default; }
 .tp-cell:hover { background: var(--bg-float-hover); }
 .tp-cell.today { color: var(--amber); font-weight: 700; }
-.tp-cell.sel { background: var(--amber); color: #1a1407; font-weight: 700; }
+.tp-cell.sel { background: var(--amber); color: var(--amber-ink); font-weight: 700; }
 .tp-time {
   display: flex;
   align-items: center;

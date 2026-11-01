@@ -152,7 +152,7 @@ const totalSize = computed(() => props.files.reduce((s, f) => s + f.size, 0))
   color: var(--amber);
   background: var(--amber-soft);
 }
-.hero-pick:hover { background: var(--amber); color: #1a1407; }
+.hero-pick:hover { background: var(--amber); color: var(--amber-ink); }
 .hero-prog { width: 340px; height: 8px; background: var(--bg-panel); border-radius: 4px; overflow: hidden; }
 .hero-prog-fill { height: 100%; background: var(--amber); transition: width .2s; }
 

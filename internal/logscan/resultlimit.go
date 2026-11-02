@@ -39,3 +39,21 @@ func MemorySoftLimit() int64 {
 	}
 	return n
 }
+
+// calcMaxUnzipBytes 解压总量上限按物理内存自适应：解压文本落 %TEMP% 磁盘，内存只存
+// 元数据索引（17B/行），真正的瓶颈是索引内存而非磁盘——8GB 文本在典型日志（行均
+// ~150B）下索引仅 ≈1GB，大内存机器本可容纳远大于 8GB 的合法包；小内存机器则不宜
+// 高于 8GB（病态短行时索引可逼近文本体积，有 OOM 风险）。上限 = 物理内存×1，
+// clamp 到 [8GB 保底, 128GB 封顶]：保底 = 现状（小机器不更紧）；封顶 = 防超大内存
+// 放行无意义天量（zip 炸弹防线仍在此）。系数 1 的理由：典型索引 ≈ 文本 10-20%，
+// 文本≈物理内存时索引仅占 ~15% RAM，留足余量
+func calcMaxUnzipBytes(totalPhys int64) int64 {
+	const floor, cap64 = int64(8 << 30), int64(128 << 30)
+	if totalPhys <= 0 || totalPhys < floor {
+		return floor
+	}
+	if totalPhys > cap64 {
+		return cap64
+	}
+	return totalPhys
+}

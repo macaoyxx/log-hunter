@@ -3,6 +3,7 @@ package logscan
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -33,32 +35,36 @@ const (
 // Session 一次排查会话：文件与索引全内存，不落盘；清空即释放。
 // zip 解压产物是唯一例外——落系统临时目录，随移除/清空/退出自动删除，保持零残留
 type Session struct {
-	mu      sync.RWMutex
-	entries []*FileEntry
-	nextID  int64
-	results []ResultRow
-	stats   QueryStats
-	cancel  context.CancelFunc // 当前进行中的查询/索引
-	opMu    sync.Mutex         // 串行化长操作（加载/查询），避免并发扫描互相干扰
-	merged  bool               // 结果视图模式：false=平铺（默认，文件加入序+行号）；true=按时间归并
+	mu             sync.RWMutex
+	entries        []*FileEntry
+	nextID         int64
+	results        []ResultRow
+	stats          QueryStats
+	cancel         context.CancelFunc // 当前进行中的查询/索引
+	exportCanceled atomic.Bool        // 导出取消标志（无锁：导出持读锁期间 CancelExport 不能拿写锁）
+	opMu           sync.Mutex         // 串行化长操作（加载/查询），避免并发扫描互相干扰
+	merged         bool               // 结果视图模式：false=平铺（默认，文件加入序+行号）；true=按时间归并
 
-	mode        resultMode     // 当前结果形态（见 resultMode 注释）
-	browseFiles []*FileEntry   // 零物化全览的文件快照（勾选顺序）
-	browsePrefix []int64       // browseFiles 各文件行数前缀和（全局行号→文件二分定位）
-	resultLimit int            // 查询结果条数上限（按物理内存自适应，见 resultlimit.go）
-	lastFreeAt  time.Time      // 上次向系统归还内存的时刻（条件 FreeOSMemory 节流用）
+	mode          resultMode   // 当前结果形态（见 resultMode 注释）
+	browseFiles   []*FileEntry // 零物化全览的文件快照（勾选顺序）
+	browsePrefix  []int64      // browseFiles 各文件行数前缀和（全局行号→文件二分定位）
+	resultLimit   int          // 查询结果条数上限（按物理内存自适应，见 resultlimit.go）
+	maxUnzipBytes int64        // 解压总量上限（按物理内存自适应，见 calcMaxUnzipBytes）
+	lastFreeAt    time.Time    // 上次向系统归还内存的时刻（条件 FreeOSMemory 节流用）
 
-	tempRoot  string           // zip 解压临时根目录（懒建，ClearAll 整体删除）
-	tempLock  *os.File         // 临时根锁文件句柄（持至进程退出，供其他实例启动清扫探活）
-	zipDirSeq int              // zip 子目录序号
-	zips      map[string]bool  // 已加载 zip 源绝对路径（防重复拖入双份内存；目录清空时同步清除）
+	tempRoot  string          // zip 解压临时根目录（懒建，ClearAll 整体删除）
+	tempLock  *os.File        // 临时根锁文件句柄（持至进程退出，供其他实例启动清扫探活）
+	zipDirSeq int             // zip 子目录序号
+	zips      map[string]bool // 已加载 zip 源绝对路径（防重复拖入双份内存；目录清空时同步清除）
 }
 
-// NewSession 创建空会话；结果上限按本机物理内存自适应
+// NewSession 创建空会话；结果上限与解压上限均按本机物理内存自适应
 func NewSession() *Session {
+	totalPhys := totalPhysicalMem()
 	return &Session{
-		zips:        make(map[string]bool),
-		resultLimit: calcResultLimit(totalPhysicalMem()),
+		zips:          make(map[string]bool),
+		resultLimit:   calcResultLimit(totalPhys),
+		maxUnzipBytes: calcMaxUnzipBytes(totalPhys),
 	}
 }
 
@@ -86,14 +92,14 @@ type FileEntry struct {
 
 // QuerySpec 查询条件（时间戳为 unixNano，0 = 不限；级别为 Level 枚举值列表）
 type QuerySpec struct {
-	FileIDs    []int64 `json:"fileIds"`
+	FileIDs    []int64  `json:"fileIds"`
 	Keywords   []string `json:"keywords"`
 	Excludes   []string `json:"excludes"`
-	Regex      string  `json:"regex"`
-	KeywordAnd bool    `json:"keywordAnd"`
-	TSStart    int64   `json:"tsStart"`
-	TSEnd      int64   `json:"tsEnd"`
-	Levels     []int8  `json:"levels"`
+	Regex      string   `json:"regex"`
+	KeywordAnd bool     `json:"keywordAnd"`
+	TSStart    int64    `json:"tsStart"`
+	TSEnd      int64    `json:"tsEnd"`
+	Levels     []int8   `json:"levels"`
 }
 
 // ResultRow 单条命中（JSON 给前端）。Preview 为整行全文（64KB 防御截断），
@@ -177,7 +183,7 @@ func (s *Session) AddFiles(ctx context.Context, paths []string, onProgress func(
 		jobs = append(jobs, job{p, i + 1, strings.EqualFold(filepath.Ext(p), ".zip")})
 	}
 
-	var mu sync.Mutex // 聚合锁（errs/added 与 fileNo 映射）
+	var mu sync.Mutex                          // 聚合锁（errs/added 与 fileNo 映射）
 	addedNo := make(map[int64]int, len(paths)) // 本次新增条目 ID → 拖入序（完成后重排展示用）
 	fail := func(p string, fileNo int, err error) {
 		mu.Lock()
@@ -841,11 +847,30 @@ func (s *Session) GetContext(fileID, offset int64, before, after int64) ([]Conte
 	return nil, fmt.Errorf("文件已移除")
 }
 
+// ExportProgress 导出进度（Done/Total 为已写/总行数）
+type ExportProgress struct {
+	Done  int64 `json:"done"`
+	Total int64 `json:"total"`
+}
+
+// errExportCanceled 导出被用户取消（已写部分保留在文件中）
+var errExportCanceled = errors.New("导出已取消")
+
+// CancelExport 取消进行中的导出：置取消标志，ExportResults 下一批检查后停笔释放读锁。
+// 无锁（atomic）——导出持读锁期间调用不会死锁
+func (s *Session) CancelExport() {
+	s.exportCanceled.Store(true)
+}
+
 // ExportResults 导出当前结果为 txt（仅原文行）或 csv（文件,行号,时间,级别,内容）。
 // 分批读行写盘（5000 行/批）：零物化全览从索引现翻译、查询模式读结果切片，两模式
 // 统一流式——不再全量补全文本常驻内存，千万行导出不撑爆内存。
-// 全程持读锁：导出为终端操作，期间写操作（移除/重查）排队等待
-func (s *Session) ExportResults(path, format string) (int, error) {
+// 全程持读锁：导出为终端操作，期间写操作（移除/重查）排队等待；
+// 每批写盘后检查取消标志，取消则返回 errExportCanceled（已写部分保留）；
+// onProgress 每批写盘后回调一次（读锁内调用，调用方不得再进入 Session 锁以免死锁）
+func (s *Session) ExportResults(path, format string, onProgress func(ExportProgress)) (int, error) {
+	s.exportCanceled.Store(false)
+	defer s.exportCanceled.Store(false)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	total := s.totalRowsLocked()
@@ -901,6 +926,12 @@ func (s *Session) ExportResults(path, format string) (int, error) {
 			}
 		}
 		written += len(rows)
+		if onProgress != nil {
+			onProgress(ExportProgress{Done: int64(written), Total: int64(total)})
+		}
+		if s.exportCanceled.Load() {
+			return written, errExportCanceled // 停笔：已写部分保留，释放读锁
+		}
 	}
 	return written, nil
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { GetResults, ExportResults, SaveFileDialog, CopyLineText, CopyText } from '../../wailsjs/go/main/App'
+import { GetResults, ExportResults, SaveFileDialog, CopyLineText, CopyText, CancelExport } from '../../wailsjs/go/main/App'
+import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import { logscan } from '../../wailsjs/go/models'
 import HighlightText from './HighlightText.vue'
 
@@ -86,7 +87,7 @@ async function copyRow() {
     await CopyLineText(m.row.fileId, m.row.offset) // 后端取完整原文并直写系统剪贴板
     rowMenuCopiedOK('row')
   } catch (e) {
-    alert('复制失败：' + e)
+    showToast('复制失败：' + e)
     closeRowMenu()
   }
 }
@@ -98,7 +99,7 @@ async function copySelText() {
     await CopyText(sel)
     rowMenuCopiedOK('sel')
   } catch (e) {
-    alert('复制失败：' + e)
+    showToast('复制失败：' + e)
     closeRowMenu()
   }
 }
@@ -295,15 +296,64 @@ const emptyHint = computed(() => {
   return '没有匹配的行 —— 试试放宽时间范围，或去掉一个筛选条件（点上方胶囊的 ×）'
 })
 
+// ---- 导出（模态框：进度/取消确认/结果三态，遮罩阻塞其他操作）----
+const exporting = ref(false)
+const exportFmt = ref<'txt' | 'csv'>('txt')
+const exportProg = ref({ done: 0, total: 0 })
+const exportState = ref<null | { ok: boolean; title: string; detail: string }>(null)
+const confirmCancel = ref(false)      // 取消确认子态
+let cancelRequested = false           // 本次导出是否请求过取消（区分取消 vs 失败）
+function onExportProgress(p: { done: number; total: number }) {
+  exportProg.value = p
+}
+onMounted(() => EventsOn('export:progress', onExportProgress))
+onUnmounted(() => EventsOff('export:progress'))
+const exportPct = computed(() => {
+  const { done, total } = exportProg.value
+  return total > 0 ? Math.min(100, (done / total) * 100) : 0
+})
+
 async function doExport(fmt: 'txt' | 'csv') {
   const p = await SaveFileDialog(`loghunter导出.${fmt}`, fmt)
   if (!p) return
+  exportFmt.value = fmt
+  exportProg.value = { done: 0, total: total.value }
+  exportState.value = null
+  confirmCancel.value = false
+  cancelRequested = false
+  exporting.value = true
   try {
     const n = await ExportResults(p, fmt)
-    alert(`已导出 ${n.toLocaleString()} 条 → ${p}`)
+    exportState.value = { ok: true, title: `已导出 ${n.toLocaleString()} 条`, detail: p }
   } catch (e) {
-    alert('导出失败：' + e)
+    if (cancelRequested) {
+      exportState.value = { ok: false, title: '已取消', detail: `已导出约 ${exportProg.value.done.toLocaleString()} 条，保留在文件中` }
+    } else {
+      exportState.value = { ok: false, title: '导出失败', detail: String(e) }
+    }
+  } finally {
+    exporting.value = false
+    confirmCancel.value = false
   }
+}
+function confirmCancelExport() {
+  cancelRequested = true
+  confirmCancel.value = false
+  CancelExport().catch(() => {}) // 后端置取消标志，ExportResults 下一批检查后停笔
+}
+function closeExport() {
+  exporting.value = false
+  exportState.value = null
+  confirmCancel.value = false
+}
+
+// ---- toast（瞬态消息，替换原生 alert）----
+const toast = ref<null | { msg: string; kind: 'danger' | 'ok' }>(null)
+let toastTimer: number | undefined
+function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
+  toast.value = { msg, kind }
+  window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => { toast.value = null }, 2500)
 }
 </script>
 
@@ -401,6 +451,39 @@ async function doExport(fmt: 'txt' | 'csv') {
       </div>
     </div>
   </div>
+
+  <!-- 导出模态框：遮罩阻塞其他操作 + 进度/取消确认/结果三态 -->
+  <div v-if="exporting || exportState" class="export-mask">
+    <div class="export-dlg">
+      <div class="export-title">导出 {{ exportFmt.toUpperCase() }}</div>
+      <template v-if="confirmCancel">
+        <div class="export-confirm">确定取消导出？已导出的部分会保留在文件中。</div>
+        <div class="export-btns">
+          <button class="ghost" @click="confirmCancel = false">继续导出</button>
+          <button class="danger" @click="confirmCancelExport">确定取消</button>
+        </div>
+      </template>
+      <template v-else-if="exporting">
+        <div class="export-bar"><div class="export-fill" :style="{ width: exportPct + '%' }"></div></div>
+        <div class="export-count">已 {{ exportProg.done.toLocaleString() }} / {{ exportProg.total.toLocaleString() }} 条 · {{ exportPct.toFixed(0) }}%</div>
+        <div class="export-btns">
+          <button class="ghost" @click="confirmCancel = true">取消</button>
+        </div>
+      </template>
+      <template v-else-if="exportState">
+        <div class="export-result" :class="exportState.ok ? 'ok' : 'err'">{{ exportState.title }}</div>
+        <div class="export-path">{{ exportState.detail }}</div>
+        <div class="export-btns">
+          <button class="primary" @click="closeExport">完成</button>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- toast：瞬态消息（复制失败等） -->
+  <transition name="toast">
+    <div v-if="toast" class="toast" :class="toast.kind">{{ toast.msg }}</div>
+  </transition>
 </template>
 
 <style scoped>
@@ -581,4 +664,47 @@ async function doExport(fmt: 'txt' | 'csv') {
 }
 .row-menu-item:hover { background: var(--bg-float-hover); }
 .row-menu-item.copied { color: var(--amber); font-weight: 600; }
+
+/* 导出模态框：复用 about/update 弹框模式（遮罩 + 浮层卡片），遮罩阻塞其他操作 */
+.export-mask {
+  position: fixed; inset: 0; z-index: 400;
+  background: var(--mask);
+  display: flex; align-items: center; justify-content: center;
+}
+.export-dlg {
+  width: 360px;
+  padding: 20px 22px 18px;
+  background: var(--bg-float);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.export-title { font-weight: 700; font-size: 14px; }
+.export-bar { height: 8px; background: var(--bg-elev); border-radius: 4px; overflow: hidden; }
+.export-fill { height: 100%; background: var(--amber); transition: width .15s; }
+.export-count { color: var(--text-dim); font-size: 12px; font-family: var(--mono); }
+.export-result { font-size: 13px; font-weight: 600; }
+.export-result.ok { color: var(--ok); }
+.export-result.err { color: var(--danger); }
+.export-confirm { color: var(--text); font-size: 12.5px; line-height: 1.5; }
+.export-path { color: var(--text-dim); font-size: 11.5px; font-family: var(--mono); word-break: break-all; }
+.export-btns { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* toast：瞬态消息 */
+.toast {
+  position: fixed; top: 16px; right: 16px; z-index: 500;
+  max-width: 420px;
+  padding: 9px 14px;
+  background: var(--bg-float);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.toast.danger { border-color: var(--danger); }
+.toast.ok { border-color: var(--ok); }
+.toast-enter-active, .toast-leave-active { transition: opacity .18s ease, transform .18s ease; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(-6px); }
 </style>

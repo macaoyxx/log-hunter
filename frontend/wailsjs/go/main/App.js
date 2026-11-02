@@ -10,6 +10,10 @@ export function Cancel() {
   return window['go']['main']['App']['Cancel']();
 }
 
+export function CancelExport() {
+  return window['go']['main']['App']['CancelExport']();
+}
+
 export function CheckUpdate() {
   return window['go']['main']['App']['CheckUpdate']();
 }

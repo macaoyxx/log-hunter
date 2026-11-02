@@ -54,9 +54,9 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 6. **分块并行读**：16MB 块、块边界对齐换行；候选行访问用顺序读游标 + 缓冲池，无随机 IO；`buildIndex` 合并期逐块释放块结果（防双份 GB 级并存）；多文件加载 4 路并行、完成后按拖入序重排。
 7. **内存治理**：结果上限按物理内存自适应（`resultlimit.go`，200 万保底~2000 万封顶）；大结果被小结果替换时延迟 1s 异步 `debug.FreeOSMemory`（立刻跑会把全局 STW 计入紧邻查询）；**禁止 `debug.SetMemoryLimit`**——软上限让 GC 满负荷，20GB 全扫实测 7.8s→25s（反例已记入 design.md）。
 8. **编码**：GBK/UTF-8 自动探测；GBK 文件的关键字与正则按 GBK 字节匹配（预转换进 matcher），含 Unicode 范围类的正则不适用 GBK；高亮在 UTF-8 侧。
-9. **防御上限**：单行显示 64KB 截断（`capLine`）；zip 解压总量 8GB；**复制整行走后端**（`CopyLineText`/`CopyText` 直写系统剪贴板）——前端剪贴板 API（navigator.clipboard / 前端 ClipboardSetText）对大文本会截断，禁止前端自行写剪贴板。
+9. **防御上限**：单行显示 64KB 截断（`capLine`）；zip 解压总量按物理内存自适应（`calcMaxUnzipBytes`：8GB 保底~128GB 封顶）；**复制整行走后端**（`CopyLineText`/`CopyText` 直写系统剪贴板）——前端剪贴板 API（navigator.clipboard / 前端 ClipboardSetText）对大文本会截断，禁止前端自行写剪贴板。
 10. 正则一律 Go RE2（`regexp` 标准库），天然免疫灾难性回溯——禁止引入第三方正则库。
-11. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录并同步清去重登记（删光后重拖可加载）、`ClearAll`/退出删根目录（失败重试 3 次）；崩溃残留由启动 `SweepStaleTemp` 清扫（目录年龄 >1h + 锁文件探针双护栏防误删活实例，幂等重试）；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收；嵌套 zip 按内容魔数（PK 头）递归解压，限 3 层，8GB 上限全树共享（含内层 scratch），每层独立 zip-<seq> 子目录随移除隔离清理。
+11. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录并同步清去重登记（删光后重拖可加载）、`ClearAll`/退出删根目录（失败重试 3 次）；崩溃残留由启动 `SweepStaleTemp` 清扫（目录年龄 >1h + 锁文件探针双护栏防误删活实例，幂等重试）；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收；嵌套 zip 按内容魔数（PK 头）递归解压，限 3 层，解压总量上限（按物理内存自适应，8GB 保底~128GB 封顶）全树共享（含内层 scratch），每层独立 zip-<seq> 子目录随移除隔离清理。
 
 ## 编码约定
 

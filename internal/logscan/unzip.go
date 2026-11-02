@@ -14,10 +14,6 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
-// maxUnzipBytes 单次拖入 zip 的累计解压上限（8GB，嵌套各层共享）：防 zip 炸弹
-// 耗尽磁盘，正常日志包远小于此
-const maxUnzipBytes = 8 << 30
-
 // maxZipDepth zip 递归解压深度上限（含最外层）：三层覆盖「收集包/服务包/日期包」
 // 的常见打包习惯，再深按病态嵌套跳过（zip 炸弹的常见形态）
 const maxZipDepth = 3
@@ -234,9 +230,9 @@ func (s *Session) extractZip(ctx context.Context, zipPath, dest string, depth in
 			continue
 		}
 		*writtenTotal += size
-		if *writtenTotal > maxUnzipBytes {
+		if *writtenTotal > s.maxUnzipBytes {
 			_ = os.Remove(target)
-			return nil, notices, fmt.Errorf("解压总量超过上限 %d GB", maxUnzipBytes>>30)
+			return nil, notices, fmt.Errorf("解压总量超过上限 %d GB", s.maxUnzipBytes>>30)
 		}
 		out = append(out, extracted{path: target, display: nameOf(name), dir: dest})
 	}
@@ -265,9 +261,9 @@ func (s *Session) extractInnerZip(ctx context.Context, rc io.ReadCloser, head []
 		return nil, append(notices, display+"（解压失败）"), nil
 	}
 	*writtenTotal += int64(n1) + n2
-	if *writtenTotal > maxUnzipBytes {
+	if *writtenTotal > s.maxUnzipBytes {
 		_ = os.Remove(scratch)
-		return nil, notices, fmt.Errorf("解压总量超过上限 %d GB", maxUnzipBytes>>30)
+		return nil, notices, fmt.Errorf("解压总量超过上限 %d GB", s.maxUnzipBytes>>30)
 	}
 	// 魔数侥幸命中/损坏的内层 zip：降级为提示，不中断整包其余条目
 	if zr, oerr := zip.OpenReader(scratch); oerr != nil {
@@ -298,6 +294,7 @@ func isZipHead(head []byte) bool {
 //     残留/上次清扫留的半残目录）才删整目录；sharing violation 说明有活实例
 //     持有，跳过。必须先探锁再删整目录——直接删会先删掉活实例的解压文件再
 //     撞锁，留半残。
+//
 // 幂等：本次清不掉（数据文件被占用）下次启动再收，稳态不累积
 func SweepStaleTemp() {
 	sweepStaleTempIn(os.TempDir())

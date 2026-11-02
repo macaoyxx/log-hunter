@@ -5,17 +5,18 @@ import (
 	"sort"
 )
 
-// mergeKeyTail 无锚点行（文件开头未出现时间 / 整文件无时间格式）的排序 key：
-// 取 int64 最大值使这些行在稳定排序中自然置尾，保持文件内原相对顺序
+// mergeKeyTail 整文件无时间格式的行的排序 key：取 int64 最大值使这些行在稳定排序
+// 中自然置尾，保持文件内原相对顺序。仅用于「文件内一条时间戳都没有」的场景
 const mergeKeyTail = int64(math.MaxInt64)
 
-// sortMerged 时间合并排序：按「向前继承锚点」的时间 key 对结果集稳定排序，
+// sortMerged 时间合并排序：按「锚点继承」的时间 key 对结果集稳定排序，
 // 多文件命中归并成单一时间线。
 //
-// key 规则（与 filterCandidates 的时间筛选同一语义，无时间行附属前一条有时间日志）：
+// key 规则（与 filterCandidates 的时间筛选同一语义，无时间行附属有时间日志）：
 //   - 行自身 TS>0 → key=TS
-//   - TS=0 → 继承同文件行号最近的前一条非零时间戳
-//   - 无锚点 → mergeKeyTail 置尾（无时间文件的命中自然落此处，按加入序排列）
+//   - TS=0 → 继承同文件行号最近的前一条非零时间戳（向前继承）
+//   - TS=0 且文件开头（无前锚点）→ 继承本文件第一条时间戳 firstTS（轮转切断的续行贴回本文件）
+//   - 文件内一条时间戳都没有 → mergeKeyTail 置尾（无时间文件按加入序排列）
 //
 // 为什么要求输入是平铺序（同一文件连续、行号升序）：锚点继承需对照文件索引的
 // ts 数组逐行推进，用「最近非零 ts 行下标 p」随行号单调前进，扫描总量不超过
@@ -32,6 +33,17 @@ func sortMerged(results []ResultRow, entryById map[int64]*FileEntry) {
 	for i := 0; i < len(results); {
 		fid := results[i].FileID
 		e := entryById[fid]
+		// firstTS：文件内第一条非零时间戳（开头无时间行的「下面最近」锚点）。
+		// 整文件扫（非结果子集）——命中的开头续行可能在文件更靠后，子集内未必含首条时间戳
+		firstTS := int64(0)
+		if e != nil {
+			for k := 0; k < len(e.idx.ts); k++ {
+				if e.idx.ts[k] > 0 {
+					firstTS = e.idx.ts[k]
+					break
+				}
+			}
+		}
 		// 扫描进度与锚点分离：scanned 是组内已扫到的行下标（每行无条件推进，
 		// 否则遇大段无时间行时锚点卡住、后续行反复重扫全零区间——实测数据里
 		// 连续数十万无时间行会把这里放大成每行上万步、总扫描数百亿次）；
@@ -56,6 +68,8 @@ func sortMerged(results []ResultRow, entryById map[int64]*FileEntry) {
 				keys[j] = results[j].TS
 			case anchor >= 0 && anchor <= li:
 				keys[j] = e.idx.ts[anchor]
+			case firstTS > 0:
+				keys[j] = firstTS
 			default:
 				keys[j] = mergeKeyTail
 			}

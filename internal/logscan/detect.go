@@ -66,7 +66,9 @@ type LineParser struct {
 }
 
 // HasTime 该格式是否含时间戳
-func (p *LineParser) HasTime() bool { return p != nil && p.Kind != "plain" && (p.Kind == "json" || p.re.tsIdx >= 0) }
+func (p *LineParser) HasTime() bool {
+	return p != nil && p.Kind != "plain" && (p.Kind == "json" || p.re.tsIdx >= 0)
+}
 
 // parseTS 解析时间戳为 unixNano；解析失败返回 0
 func (p *LineParser) parseTS(s string) int64 {
@@ -232,40 +234,48 @@ func DetectFormat(sample []byte, loc *time.Location) *LineParser {
 		return p
 	}
 
-	// 文本模板探测：取综合得分最高且 >= 60% 的模板
-	// （同时识别出有效级别的模板计双分——同样能匹配时间时，级别信息更全的模板胜出）
+	// 文本模板探测：按「锚点继承」统计有时间的行——时间戳行自带时间，紧跟其后的
+	// 续行（异常堆栈/SQL 续行/JSON dump 等，本行无时间戳）向前继承上一时间戳，
+	// 不拖低密度。有时间行占比 ≥60% 判为时间格式；多模板命中时优先级别信息更全者。
+	// 与查询期的锚点继承语义一致（AGENTS.md「时间锚点继承是统一语义」）
 	var best *namedTemplate
-	bestHits := 0
+	bestLv, bestAnchored := -1, 0
 	for i := range builtinTemplates {
 		src := &builtinTemplates[i]
 		t := namedTemplate{name: src.name, re: src.re, tsIdx: src.tsIdx, lvIdx: src.lvIdx}
-		hits := 0
+		anchored, lvHits := 0, 0
+		inBlock := false // 是否已进入有时间戳的块（续行从块首继承时间）
 		for _, ln := range lines {
 			m := t.re.FindSubmatchIndex(ln)
-			if m == nil {
-				continue
-			}
-			// ts 组必须能解析成时间才算有效命中（避免 "2024-13-99" 之类误配）
-			if t.tsIdx >= 0 && m[2*t.tsIdx] >= 0 {
+			if m != nil && t.tsIdx >= 0 && m[2*t.tsIdx] >= 0 {
+				// ts 组必须能解析成时间才算有效命中（避免 "2024-13-99" 之类误配）
 				s := normalizeTS(string(ln[m[2*t.tsIdx]:m[2*t.tsIdx+1]]))
 				if l := matchLayout(s, loc); l != "" {
-					hits++
+					inBlock = true
+					anchored++
 					if t.layout == "" {
 						t.layout = l
 					}
-					// 级别组有效（能归一化）则双分
+					// 级别组有效（能归一化）才计级别命中（模板择优用）
 					if t.lvIdx >= 0 && m[2*t.lvIdx] >= 0 &&
 						normalizeLevel(string(ln[m[2*t.lvIdx]:m[2*t.lvIdx+1]])) != LevelUnknown {
-						hits++
+						lvHits++
 					}
+					continue
 				}
 			}
+			// 未命中：时间戳块的续行继承上一时间戳，计为「有时间」不扣密度
+			if inBlock {
+				anchored++
+			}
 		}
-		if hits > bestHits {
-			best, bestHits = &t, hits
+		if anchored*10 >= len(lines)*6 { // 有时间行占比 ≥60%
+			if lvHits > bestLv || (lvHits == bestLv && anchored > bestAnchored) {
+				best, bestLv, bestAnchored = &t, lvHits, anchored
+			}
 		}
 	}
-	if best != nil && bestHits*10/len(lines) >= 12 { // 双分制下阈值等比放宽
+	if best != nil {
 		return &LineParser{Kind: "text", Template: best.name, re: best, layout: best.layout, Loc: loc}
 	}
 	return &LineParser{Kind: "plain", Loc: loc}

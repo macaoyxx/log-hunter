@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"strings"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +86,24 @@ func TestDetectFormatPlain(t *testing.T) {
 	ts, lv := parser.ParseLine([]byte("anything"))
 	if ts != 0 || lv != LevelUnknown {
 		t.Fatal("plain 应返回无时间无级别")
+	}
+}
+
+// TestDetectFormatContinuationHeavy SQL/JSON 续行占比极高的真实日志（时间行仅 ~33%）：
+// 续行按锚点继承计为「有时间」，不得把整文件误判 plain（旧密度阈值会）
+func TestDetectFormatContinuationHeavy(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 40; i++ {
+		b.WriteString("2026-11-01 00:00:00 623 [] [http-nio-9527-exec-17 ][INFO][JwtFilter.java : 86] -- preHandle requestId:1\n")
+		b.WriteString("\tOriginal SQL: SELECT id, createTime, name FROM sc_st_record\n")
+		b.WriteString("\t WHERE isDeleted=0 AND tenantId=9352\n")
+	}
+	p := DetectFormat([]byte(b.String()), time.Local)
+	if p.Kind != "text" || p.Template != "bracket-level" {
+		t.Fatalf("SQL 续行密集日志应判 text/bracket-level，得到 %s/%s", p.Kind, p.Template)
+	}
+	if !p.HasTime() {
+		t.Fatal("应识别出时间戳")
 	}
 }
 
@@ -772,9 +790,9 @@ func TestFilterCandidatesAnchor(t *testing.T) {
 		ts:      []int64{0, 100, 0, 0, 200, 0},
 		levels:  []int8{-1, -1, -1, -1, -1, -1},
 	}
-	// 范围 [100,100]：行1 及继承 100 的行2/3；行0 无锚点排除、行4/5 超范围
+	// 范围 [100,100]：行1 及向前继承 100 的行2/3；行0 开头无时间行继承第一条时间戳 100；行4/5 超范围
 	cands := ix.filterCandidates(100, 100, nil)
-	if len(cands) != 3 || cands[0] != 1 || cands[1] != 2 || cands[2] != 3 {
+	if len(cands) != 4 || cands[0] != 0 || cands[1] != 1 || cands[2] != 2 || cands[3] != 3 {
 		t.Fatalf("锚点继承筛选错误: %v", cands)
 	}
 	// 范围 [150,250]：行4 及继承 200 的行5
@@ -874,7 +892,7 @@ func seqEqual(a, b []resultRef) bool {
 // TestSetMergedStackFollows 堆栈块不被其他节点同刻的行插散：
 // 文件 C 的 ERROR(10:00:01) 带堆栈续行、文件 D 恰好也有 10:00:01 的行——
 // 稳定排序下堆栈续行（继承锚点 10:00:01）紧贴主行，D 的行排在其后。
-// （首尾补时间行是给格式探测凑命中率——堆栈占比过高整文件会被判 plain）
+// （首尾补时间行是为了让文件被判为有时间格式——文件内需有可识别的时间戳行）
 func TestSetMergedStackFollows(t *testing.T) {
 	logC := `2024-01-15 10:00:00.500 INFO c0
 2024-01-15 10:00:01.000 ERROR boom
@@ -900,10 +918,10 @@ func TestSetMergedStackFollows(t *testing.T) {
 	}
 	s.SetMerged(true)
 	want := []resultRef{
-		{added[0].ID, 1},                                           // c0 (00.500)
-		{added[0].ID, 2}, {added[0].ID, 3}, {added[0].ID, 4},       // ERROR + 堆栈×2（同 key 稳定序不散）
-		{added[1].ID, 1},                                           // D 的同刻行在其后（文件加入序）
-		{added[0].ID, 5},                                           // c9 (01.500)
+		{added[0].ID, 1},                                     // c0 (00.500)
+		{added[0].ID, 2}, {added[0].ID, 3}, {added[0].ID, 4}, // ERROR + 堆栈×2（同 key 稳定序不散）
+		{added[1].ID, 1}, // D 的同刻行在其后（文件加入序）
+		{added[0].ID, 5}, // c9 (01.500)
 	}
 	if got := resultSeq(s.results); !seqEqual(got, want) {
 		t.Fatalf("堆栈块被插散:\n got  %v\n want %v", got, want)
@@ -913,6 +931,46 @@ func TestSetMergedStackFollows(t *testing.T) {
 		if r.TS != 0 {
 			t.Fatalf("无时间行的 TS 字段不应被改写: %+v", r)
 		}
+	}
+}
+
+// TestSetMergedLeadingNoTime 文件开头无时间行（轮转在多行条目中间切断的续行）：
+// 继承本文件第一条时间戳、不置尾、不跨文件——A 结尾续行向前继承 A 末时间，
+// B 开头续行向后继承 B 首时间
+func TestSetMergedLeadingNoTime(t *testing.T) {
+	logA := "2024-01-15 10:00:01.000 INFO a1\n" +
+		"2024-01-15 10:00:04.000 INFO a2\n" +
+		"\tcontinuation of a2\n"
+	logB := "\tleading continuation of b\n" +
+		"2024-01-15 10:00:02.000 INFO b1\n" +
+		"2024-01-15 10:00:03.000 INFO b2\n"
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, _ := s.AddFiles(context.Background(),
+		[]string{writeTemp(t, logA), writeTemp(t, logB)}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if !added[1].HasTime {
+		t.Fatal("logB 应探测为有时间格式")
+	}
+	if _, err := s.RunQuery(context.Background(), &QuerySpec{
+		FileIDs: []int64{added[0].ID, added[1].ID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMerged(true)
+	// 时间序：A1(01) → [B 开头续行 + B1](02，同 key 稳定序续行在前) → B2(03) → [A2 + A 续行](04)
+	want := []resultRef{
+		{added[0].ID, 1}, // A1 01
+		{added[1].ID, 1}, // B 开头续行（继承 02）
+		{added[1].ID, 2}, // B1 02
+		{added[1].ID, 3}, // B2 03
+		{added[0].ID, 2}, // A2 04
+		{added[0].ID, 3}, // A 续行（继承 04）
+	}
+	if got := resultSeq(s.results); !seqEqual(got, want) {
+		t.Fatalf("开头无时间行未贴首条时间戳:\n got  %v\n want %v", got, want)
 	}
 }
 
@@ -1008,16 +1066,38 @@ func TestCalcResultLimit(t *testing.T) {
 		totalPhys int64
 		want      int
 	}{
-		{0, resultLimitFloor},                    // 检测失败兜底
-		{256 << 20, resultLimitFloor},            // 256MB → 换算值低于下限，保底
-		{1 << 30, 1 << 30 / 4 / resultRowBytes},  // 1GB → 线性区（约 419 万）
-		{4 << 30, 4 << 30 / 4 / resultRowBytes},  // 4GB → 线性区
-		{16 << 30, resultLimitCap},               // 16GB → 封顶
-		{64 << 30, resultLimitCap},               // 64GB → 封顶
+		{0, resultLimitFloor},                   // 检测失败兜底
+		{256 << 20, resultLimitFloor},           // 256MB → 换算值低于下限，保底
+		{1 << 30, 1 << 30 / 4 / resultRowBytes}, // 1GB → 线性区（约 419 万）
+		{4 << 30, 4 << 30 / 4 / resultRowBytes}, // 4GB → 线性区
+		{16 << 30, resultLimitCap},              // 16GB → 封顶
+		{64 << 30, resultLimitCap},              // 64GB → 封顶
 	}
 	for _, c := range cases {
 		if got := calcResultLimit(c.totalPhys); got != c.want {
 			t.Errorf("calcResultLimit(%d)=%d want %d", c.totalPhys, got, c.want)
+		}
+	}
+}
+
+// TestCalcMaxUnzipBytes 解压上限按物理内存自适应：0/小内存保底 8GB、中等线性、
+// 超大封顶 128GB
+func TestCalcMaxUnzipBytes(t *testing.T) {
+	cases := []struct {
+		totalPhys int64
+		want      int64
+	}{
+		{0, 8 << 30},           // 检测失败兜底 → 保底
+		{4 << 30, 8 << 30},     // 4GB → 低于下限，保底（小内存机器不更紧）
+		{8 << 30, 8 << 30},     // 8GB → 恰好下限
+		{16 << 30, 16 << 30},   // 16GB → 线性区（文本上限≈物理内存）
+		{64 << 30, 64 << 30},   // 64GB → 线性区
+		{128 << 30, 128 << 30}, // 128GB → 恰好封顶
+		{256 << 30, 128 << 30}, // 256GB → 封顶
+	}
+	for _, c := range cases {
+		if got := calcMaxUnzipBytes(c.totalPhys); got != c.want {
+			t.Errorf("calcMaxUnzipBytes(%d)=%d want %d", c.totalPhys, got, c.want)
 		}
 	}
 }
@@ -1103,7 +1183,7 @@ func TestExportBrowseAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := filepath.Join(t.TempDir(), "out.txt")
-	n, err := s.ExportResults(p, "txt")
+	n, err := s.ExportResults(p, "txt", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,8 @@ export function AddFiles(arg1:Array<string>):Promise<main.AddFilesResult>;
 
 export function Cancel():Promise<void>;
 
+export function CancelExport():Promise<void>;
+
 export function CheckUpdate():Promise<main.UpdateInfo>;
 
 export function ClearAll():Promise<void>;

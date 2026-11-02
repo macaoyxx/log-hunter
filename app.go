@@ -23,15 +23,15 @@ import (
 
 // App 应用结构：Wails 绑定层，包装 logscan.Session 与配置存储
 type App struct {
-	ctx       context.Context
-	session   *logscan.Session
-	conf      *appconf.Store
-	procStart time.Time    // 进程启动时刻（埋点起点，main 传入）
-	startupAt time.Time    // Wails OnStartup 时刻（埋点中点）
+	ctx        context.Context
+	session    *logscan.Session
+	conf       *appconf.Store
+	procStart  time.Time   // 进程启动时刻（埋点起点，main 传入）
+	startupAt  time.Time   // Wails OnStartup 时刻（埋点中点）
 	winShowing atomic.Bool // 显示动作防重（只允许一次 WindowShow 发起）
 	winShown   atomic.Bool // 窗口已显示且稳定（显示后留 300ms 消化焦点消息再置位；
-	                       // 对话框弹出前必须等待它——窗口显示在途撞上文件对话框
-	                       // 模态会让 WebView2 Focus 报参数错直接 Fatal 闪退）
+	// 对话框弹出前必须等待它——窗口显示在途撞上文件对话框
+	// 模态会让 WebView2 Focus 报参数错直接 Fatal 闪退）
 }
 
 // NewApp 创建应用实例；配置存储打开失败降级为内存态（不阻断启动）
@@ -252,12 +252,19 @@ func (a *App) ValidateRegex(s string) string {
 	return ""
 }
 
-// ExportResults 导出当前结果（format: txt | csv），返回导出条数
+// ExportResults 导出当前结果（format: txt | csv），返回导出条数；进度经 "export:progress" 事件推送
 func (a *App) ExportResults(path, format string) (int, error) {
 	if path == "" {
 		return 0, fmt.Errorf("未选择保存位置")
 	}
-	return a.session.ExportResults(path, format)
+	return a.session.ExportResults(path, format, func(p logscan.ExportProgress) {
+		runtime.EventsEmit(a.ctx, "export:progress", p)
+	})
+}
+
+// CancelExport 取消进行中的导出（后端停笔，已写部分保留）
+func (a *App) CancelExport() {
+	a.session.CancelExport()
 }
 
 // SaveFileDialog 导出用：弹出系统保存对话框，返回所选路径（取消返回空串）

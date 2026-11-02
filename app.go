@@ -53,6 +53,8 @@ func (a *App) startup(ctx context.Context) {
 		if exe, err := os.Executable(); err == nil {
 			update.CleanupOld(exe)
 		}
+		// 清扫崩溃/强杀残留的解压临时根（锁探针 + 年龄护栏防误删活实例，见 unzip.go）
+		logscan.SweepStaleTemp()
 	}()
 	go func() {
 		time.Sleep(3 * time.Second)

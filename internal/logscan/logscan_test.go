@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"path/filepath"
@@ -458,7 +459,7 @@ func gbkTestName(t *testing.T, s string) string {
 func TestAddZip(t *testing.T) {
 	dir := t.TempDir()
 
-	// 内层 zip（真实 zip 字节）：嵌套 zip 应被二进制校验自动跳过（不递归）
+	// 内层 zip（真实 zip 字节）：应按内容魔数识别并递归解出其中文本
 	var inner bytes.Buffer
 	iw := zip.NewWriter(&inner)
 	w, _ := iw.Create("inner.log")
@@ -493,19 +494,22 @@ func TestAddZip(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatal(errs)
 	}
-	// 文本条目 2 个：轮转命名日志 + GBK 中文名文件
-	if len(added) != 2 {
-		t.Fatalf("应加载 2 个文本文件: %d（notices=%v）", len(added), notices)
+	// 文本条目 3 个：轮转命名日志 + 嵌套 zip 解出的内层文本 + GBK 中文名文件
+	if len(added) != 3 {
+		t.Fatalf("应加载 3 个文本文件: %d（notices=%v）", len(added), notices)
 	}
 	if added[0].Name != "logs.zip/logs/app.log.101" {
 		t.Fatalf("显示名错误: %s", added[0].Name)
 	}
-	if added[1].Name != "logs.zip/日志.log" {
-		t.Fatalf("GBK 文件名解码错误: %s", added[1].Name)
+	if added[1].Name != "logs.zip/nested.zip/inner.log" {
+		t.Fatalf("嵌套 zip 显示名错误: %s", added[1].Name)
 	}
-	// 跳过提示：二进制 / 空 / 嵌套 zip / 路径非法
+	if added[2].Name != "logs.zip/日志.log" {
+		t.Fatalf("GBK 文件名解码错误: %s", added[2].Name)
+	}
+	// 跳过提示：二进制 / 空 / 路径非法（嵌套 zip 已改为递归解压，不再出现在提示里）
 	joined := strings.Join(notices, "|")
-	for _, want := range []string{"二进制", "空文件", "nested.zip", "evil.txt"} {
+	for _, want := range []string{"二进制", "空文件", "evil.txt"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("跳过提示应含 %q: %v", want, notices)
 		}
@@ -549,6 +553,214 @@ func TestAddZip(t *testing.T) {
 	s.ClearAll()
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Error("清空后临时根应删除")
+	}
+}
+
+// zipEntry/zipBuf 测试辅助：按序构造内存 zip 字节（顺序决定解压条目序）
+type zipEntry struct {
+	name string
+	data []byte
+}
+
+func zipBuf(t *testing.T, entries ...zipEntry) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	w := zip.NewWriter(&b)
+	for _, e := range entries {
+		fw, err := w.Create(e.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(e.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+func writeZipFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAddZipNested 嵌套 zip 递归解压：三层解出、四层超深跳过、
+// 内层目录按 zip 隔离清理、scratch 无残留
+func TestAddZipNested(t *testing.T) {
+	dir := t.TempDir()
+
+	// 三层：outer.zip{ a.log, svc.zip{ b.log, day.zip{ c.log } } }
+	day := zipBuf(t, zipEntry{"c.log", []byte("2026-11-01 10:00:00 INFO deep ok\n")})
+	svc := zipBuf(t,
+		zipEntry{"b.log", []byte("2026-11-01 09:00:00 INFO mid ok\n")},
+		zipEntry{"day.zip", day},
+	)
+	outer := zipBuf(t,
+		zipEntry{"a.log", []byte("2026-11-01 08:00:00 INFO top ok\n")},
+		zipEntry{"svc.zip", svc},
+	)
+	zipPath := filepath.Join(dir, "outer.zip")
+	writeZipFile(t, zipPath, outer)
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, errs, notices := s.AddFiles(context.Background(), []string{zipPath}, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	want := []string{"outer.zip/a.log", "outer.zip/svc.zip/b.log", "outer.zip/svc.zip/day.zip/c.log"}
+	if len(added) != len(want) {
+		t.Fatalf("三层应各解出 1 个文本: %d（notices=%v）", len(added), notices)
+	}
+	for i, wn := range want {
+		if added[i].Name != wn {
+			t.Errorf("第 %d 个显示名 %q, want %q", i, added[i].Name, wn)
+		}
+	}
+
+	// scratch 与 zip 字节不残留（内容已解出的内层 zip 本体即删）
+	_ = filepath.WalkDir(s.tempRoot, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && (strings.HasPrefix(d.Name(), "zipsrc-") || strings.HasSuffix(d.Name(), ".zip")) {
+			t.Errorf("临时根内不应残留 zip/scratch: %s", p)
+		}
+		return nil
+	})
+
+	// 目录隔离：仅移除最内层 c.log → 只删其所属 zip 子目录，外层文件不动
+	var deep *FileEntry
+	for _, e := range s.Files() {
+		if e.Name == want[2] {
+			deep = e
+		}
+	}
+	if deep == nil {
+		t.Fatal("未找到最内层文件")
+	}
+	deepDir := deep.tempDir
+	s.RemoveFile(deep.ID)
+	if _, err := os.Stat(deepDir); !os.IsNotExist(err) {
+		t.Error("内层 zip 子目录应随最后一个引用删除")
+	}
+	if n := len(s.Files()); n != 2 {
+		t.Fatalf("外层两个文件应保留: %d", n)
+	}
+
+	// 四层：第 4 层 zip 超深跳过（文本照常解到第 3 层）
+	l3 := zipBuf(t, zipEntry{"d.log", []byte("too deep\n")})
+	l2 := zipBuf(t,
+		zipEntry{"c.log", []byte("2026-11-01 11:00:00 INFO l2 ok\n")},
+		zipEntry{"l3.zip", l3},
+	)
+	l1 := zipBuf(t,
+		zipEntry{"b.log", []byte("2026-11-01 10:30:00 INFO l1 ok\n")},
+		zipEntry{"l2.zip", l2},
+	)
+	outer2 := zipBuf(t,
+		zipEntry{"a.log", []byte("2026-11-01 10:00:00 INFO top ok\n")},
+		zipEntry{"l1.zip", l1},
+	)
+	zipPath2 := filepath.Join(dir, "outer2.zip")
+	writeZipFile(t, zipPath2, outer2)
+
+	s2 := NewSession()
+	defer s2.ClearAll()
+	added2, errs2, notices2 := s2.AddFiles(context.Background(), []string{zipPath2}, nil)
+	if len(errs2) > 0 {
+		t.Fatal(errs2)
+	}
+	if len(added2) != 3 {
+		t.Fatalf("四层包应解出前 3 层文本: %d（notices=%v）", len(added2), notices2)
+	}
+	joined := strings.Join(notices2, "|")
+	if !strings.Contains(joined, "嵌套超过 3 层") {
+		t.Errorf("第 4 层 zip 应提示嵌套超深: %v", notices2)
+	}
+}
+
+// TestSweepStaleTemp 启动清扫：陈旧无锁目录被清、活锁/年轻/无关目录不动
+func TestSweepStaleTemp(t *testing.T) {
+	base := t.TempDir()
+	old := time.Now().Add(-2 * time.Hour)
+
+	// A：陈旧 + 无锁（老版本崩溃残留形态）→ 清
+	a := filepath.Join(base, "log-hunter-unzip-a")
+	if err := os.MkdirAll(a, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a, "x.log"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(a, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	// B：陈旧 + 活锁句柄（活实例形态）→ 跳过
+	b := filepath.Join(base, "log-hunter-unzip-b")
+	if err := os.MkdirAll(b, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := os.OpenFile(filepath.Join(b, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lk.Close() }()
+	if err := os.Chtimes(b, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	// C：年轻（刚建根竞态窗口形态）→ 跳过
+	c := filepath.Join(base, "log-hunter-unzip-c")
+	if err := os.MkdirAll(c, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// D：非本应用前缀 → 不动
+	d := filepath.Join(base, "other-dir")
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(d, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepStaleTempIn(base)
+
+	if _, err := os.Stat(a); !os.IsNotExist(err) {
+		t.Error("陈旧无锁目录应被清扫")
+	}
+	if _, err := os.Stat(filepath.Join(b, "lock")); err != nil {
+		t.Error("活锁目录内容不应被动")
+	}
+	if _, err := os.Stat(c); err != nil {
+		t.Error("年轻目录应跳过")
+	}
+	if _, err := os.Stat(d); err != nil {
+		t.Error("无关目录不应被动")
+	}
+}
+
+// TestReaddZipAfterRemove 删光某 zip 全部文件后重拖同一 zip：应能重新加载
+// （旧版 s.zips 登记不随目录清除，重拖被「已加载过」永久挡住）
+func TestReaddZipAfterRemove(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "one.zip")
+	writeZipFile(t, zipPath, zipBuf(t, zipEntry{"a.log", []byte(stdLog)}))
+
+	s := NewSession()
+	defer s.ClearAll()
+	added, _, _ := s.AddFiles(context.Background(), []string{zipPath}, nil)
+	if len(added) != 1 {
+		t.Fatalf("应加载 1 个: %d", len(added))
+	}
+	s.RemoveFile(added[0].ID)
+
+	added2, _, notices2 := s.AddFiles(context.Background(), []string{zipPath}, nil)
+	if len(added2) != 1 {
+		t.Fatalf("删光后重拖应重新加载: added=%d notices=%v", len(added2), notices2)
 	}
 }
 

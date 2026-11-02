@@ -24,7 +24,7 @@ cd frontend && npm run build # 前端类型检查（vue-tsc --noEmit）+ 构建
 internal/logscan/   核心引擎 —— 纯库，严禁 import Wails 或任何 UI 依赖
 ├── merge.go        时间合并排序（锚点 key+索引置换）与分组顺序读
 ├── resultlimit.go  结果上限内存自适应（Windows 物理内存查询）
-├── unzip.go        zip 解压（内容级二进制校验、临时目录生命周期）
+├── unzip.go        zip 解压（内容级二进制校验、嵌套 zip 递归≤3 层、临时目录生命周期与启动清扫）
 internal/appconf/   应用配置持久化 —— 纯库：data/config.json（主题+查询历史），不含 UI
 internal/update/    应用内自动更新 —— 纯库：下载（进度回调）/sha256 校验/解压/rename 自替换
 app.go              Wails 绑定层：包装 logscan.Session，进度事件、系统对话框、剪贴板、更新编排
@@ -56,7 +56,7 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 8. **编码**：GBK/UTF-8 自动探测；GBK 文件的关键字与正则按 GBK 字节匹配（预转换进 matcher），含 Unicode 范围类的正则不适用 GBK；高亮在 UTF-8 侧。
 9. **防御上限**：单行显示 64KB 截断（`capLine`）；zip 解压总量 8GB；**复制整行走后端**（`CopyLineText`/`CopyText` 直写系统剪贴板）——前端剪贴板 API（navigator.clipboard / 前端 ClipboardSetText）对大文本会截断，禁止前端自行写剪贴板。
 10. 正则一律 Go RE2（`regexp` 标准库），天然免疫灾难性回溯——禁止引入第三方正则库。
-11. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录、`ClearAll`/退出删根目录；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收。
+11. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录并同步清去重登记（删光后重拖可加载）、`ClearAll`/退出删根目录（失败重试 3 次）；崩溃残留由启动 `SweepStaleTemp` 清扫（目录年龄 >1h + 锁文件探针双护栏防误删活实例，幂等重试）；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收；嵌套 zip 按内容魔数（PK 头）递归解压，限 3 层，8GB 上限全树共享（含内层 scratch），每层独立 zip-<seq> 子目录随移除隔离清理。
 
 ## 编码约定
 

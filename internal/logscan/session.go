@@ -49,8 +49,9 @@ type Session struct {
 	lastFreeAt  time.Time      // 上次向系统归还内存的时刻（条件 FreeOSMemory 节流用）
 
 	tempRoot  string           // zip 解压临时根目录（懒建，ClearAll 整体删除）
+	tempLock  *os.File         // 临时根锁文件句柄（持至进程退出，供其他实例启动清扫探活）
 	zipDirSeq int              // zip 子目录序号
-	zips      map[string]bool  // 已加载 zip 源绝对路径（防重复拖入双份内存）
+	zips      map[string]bool  // 已加载 zip 源绝对路径（防重复拖入双份内存；目录清空时同步清除）
 }
 
 // NewSession 创建空会话；结果上限按本机物理内存自适应
@@ -80,6 +81,7 @@ type FileEntry struct {
 	enc    TextEncoding
 
 	tempDir string // zip 解压来源目录（非空 = 临时解压产物，随移除/清空删除）
+	zipAbs  string // 来源 zip 绝对路径（该 zip 目录清空时同步清 s.zips 登记，防重拖被挡）
 }
 
 // QuerySpec 查询条件（时间戳为 unixNano，0 = 不限；级别为 Level 枚举值列表）
@@ -343,11 +345,12 @@ func (s *Session) RemoveFile(id int64) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	s.mu.Lock()
-	var tempDir string
+	var tempDir, zipAbs string
 	for i, e := range s.entries {
 		if e.ID == id {
 			_ = e.lf.Close()
 			tempDir = e.tempDir
+			zipAbs = e.zipAbs
 			s.entries = append(s.entries[:i], s.entries[i+1:]...)
 			break
 		}
@@ -362,6 +365,8 @@ func (s *Session) RemoveFile(id int64) {
 		}
 		if !used {
 			_ = os.RemoveAll(tempDir)
+			// 目录已删，登记同步清除——否则删光该 zip 全部文件后重拖会被「已加载过」挡住
+			delete(s.zips, zipAbs)
 		}
 	}
 	s.mu.Unlock()
@@ -387,7 +392,17 @@ func (s *Session) ClearAll() {
 	s.zips = make(map[string]bool)
 	s.mu.Unlock()
 	if root != "" {
-		_ = os.RemoveAll(root)
+		if s.tempLock != nil {
+			_ = s.tempLock.Close() // Windows 下自己打开的文件删不掉，先放锁
+			s.tempLock = nil
+		}
+		// 删除失败有限重试（杀毒/备份瞬时占用）；仍失败由下次启动 SweepStaleTemp 兜底
+		for i := 0; i < 3; i++ {
+			if err := os.RemoveAll(root); err == nil || os.IsNotExist(err) {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
 	}
 	s.results = nil
 	s.stats = QueryStats{}

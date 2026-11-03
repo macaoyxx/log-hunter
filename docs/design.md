@@ -18,9 +18,9 @@ LogHunter 是 Windows 免安装单文件桌面应用（约 12MB exe），面向�
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  前端 frontend/src/（Vue 3 + TS，手写组件，无 UI 框架）        │
-│  FileBar 文件筹码条 · QueryBar 查询表单 · TimePicker          │
+│  SideRail 指挥轨 · QueryBar 指令条 · TimePicker               │
 │  ResultTable 虚拟滚动结果表 · ContextPanel 上下文面板          │
-│  HighlightText 防注入高亮 · 更新浮层 / 右键菜单               │
+│  HighlightText 防注入高亮 · ThemePopover 主题系统 · 右键菜单   │
 └──────────────┬──────────────────────────────────────────────┘
                │ wailsjs 生成绑定（全 Promise）+ 事件订阅
                │ files:progress / query:progress / update:progress
@@ -139,7 +139,7 @@ type LineIndex struct {
 ### 4.10 编码与 zip
 
 - GBK/UTF-8 自动探测；**关键字按文件编码预转换成字节匹配**（`encodeKeyword`），GBK 文件不做逐行转码全扫；
-- zip 按**内容**判定文本（前 16KB 含 NUL 跳过），轮转命名 `.log.101` 照收；GBK 文件名解码；Zip Slip 防护 + 8GB 解压上限；临时目录随移除/清空/退出删除（零残留）。
+- zip 按**内容**判定文本（前 16KB 含 NUL 跳过），轮转命名 `.log.101` 照收；GBK 文件名解码；Zip Slip 防护 + 解压上限（物理内存自适应，会话累计共享，单条目 CopyN 写盘硬限防炸弹）；临时目录随移除/清空/退出删除（零残留）。
 
 ### 4.11 前端渲染
 
@@ -151,7 +151,7 @@ type LineIndex struct {
 ### 4.12 启动与自动更新
 
 - **启动**：`StartHidden` 隐藏启动，前端就绪上报后 `WindowShow`（Go 侧 3s 兜底）——窗口「出现即就绪」消除空窗期；启动耗时埋点写 `data/startup.log`（关于弹窗可见），用于区分 Defender 扫描/WebView2 冷启等外部因素；
-- **自动更新**：检查 GitHub Release 资产 → 确认浮层 → 下载（进度事件）→ **sha256 强制校验**（历史版本无校验文件时过渡跳过）→ 解压（条目名精确匹配）→ **rename 自替换**（运行中 exe 改名 `.old` 让位、新 exe 落位、失败回滚）→ 立即/稍后重启；新进程启动时退避清理 `.old`。
+- **自动更新**：检查 GitHub Release 资产 → 确认浮层 → 下载（进度事件）→ **sha256 强制校验**（Release 缺 `.sha256` 资产即拒绝更新）→ 解压（条目名精确匹配 + 写盘硬限）→ **rename 自替换**（先备同盘 `.new` 再让位，exe 缺失窗口毫秒级；失败回滚）→ 立即/稍后重启；新进程启动时退避清理 `.old`。
 
 ## 5. 并发与生命周期
 

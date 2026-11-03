@@ -15,7 +15,13 @@
 
 ## 操作演示
 
-![操作演示](docs/assets/product/demo.gif)
+<p>
+  <picture>
+    <source srcset="docs/assets/product/demo.png" media="(prefers-reduced-motion: reduce)">
+    <img src="docs/assets/product/demo.gif" alt="操作演示（约 3.3MB，加载中请稍候）" loading="lazy">
+  </picture>
+</p>
+<sub>△ 演示动图约 3.3 MB，弱网加载需数秒——空白即正在加载</sub>
 
 ## 上下文详情
 

@@ -73,7 +73,7 @@ function closeRowMenu() { rowMenu.value = null }
 function rowMenuCopiedOK(kind: 'row' | 'sel') {
   rowMenuCopied.value = kind
   window.clearTimeout(rowMenuCloseTimer)
-  rowMenuCloseTimer = window.setTimeout(closeRowMenu, 700) // 「已复制」短暂反馈后收起
+  rowMenuCloseTimer = window.setTimeout(closeRowMenu, 600) // 「已复制」反馈 0.6s 后收起
 }
 // fixed 锚定鼠标坐标，贴近视口右/下缘时收回避免溢出
 const rowMenuStyle = computed(() => {
@@ -513,15 +513,15 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
         </div>
       </div>
 
-      <!-- 右键复制菜单：fixed 锚定鼠标坐标，视口边缘翻转；反馈「✓ 已复制」后收起 -->
+      <!-- 右键复制菜单：fixed 锚定鼠标坐标，视口边缘翻转；反馈「已复制」1.2s 后收起（与详情面板右键一致） -->
       <div v-if="rowMenu" class="row-menu" :style="rowMenuStyle" @mousedown.stop>
-        <button v-if="rowMenuCopied === 'sel'" class="row-menu-item copied" disabled>✓ 已复制</button>
+        <button v-if="rowMenuCopied === 'sel'" class="row-menu-item copied" disabled><AppIcon name="check" :size="12" />已复制</button>
         <button v-else class="row-menu-item" :disabled="!rowMenu.sel"
           :title="rowMenu.sel ? '复制鼠标选中的文本' : '先选中文本再复制'" @click="copySelText">
-          ⧉ 复制选中文本
+          <AppIcon name="copy" :size="12" />复制选中文本
         </button>
-        <button v-if="rowMenuCopied === 'row'" class="row-menu-item copied" disabled>✓ 已复制</button>
-        <button v-else class="row-menu-item" @click="copyRow">⧉ 复制整行（完整原文）</button>
+        <button v-if="rowMenuCopied === 'row'" class="row-menu-item copied" disabled><AppIcon name="check" :size="12" />已复制</button>
+        <button v-else class="row-menu-item" title="复制整行的完整原文（不受显示截断限制）" @click="copyRow"><AppIcon name="copy" :size="12" />复制整行</button>
       </div>
     </div>
   </div>
@@ -802,7 +802,10 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   box-shadow: var(--shadow-pop);
 }
 .row-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
   width: 100%;
   padding: 6px 10px;
   border: none;
@@ -813,6 +816,7 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   text-align: left;
   cursor: pointer;
 }
+.row-menu-item svg { color: var(--text-dim); }
 .row-menu-item:hover { background: var(--bg-float-hover); }
 .row-menu-item.copied { color: var(--accent-strong); font-weight: 600; }
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import AppIcon from './AppIcon.vue'
 import { SLOT_NAMES } from '../constants'
 
 // 自绘右键菜单（详情面板格式标记用）：主菜单（复制 / 加标记▸ / 清除标记▸）+
@@ -114,17 +115,18 @@ function onScroll() { emit('close') }
     ref="el" class="cmenu" :style="{ left: px + 'px', top: py + 'px' }"
     @contextmenu.prevent @mousedown.stop @mouseleave="enterItem(null)"
   >
-    <button v-if="copiedHint === 'copyLine'" class="mi copied" disabled>
-      <span class="m-ico">✓</span>已复制
-    </button>
-    <button v-else class="mi" :title="'复制目标行的完整原文（不受显示截断限制）'" @click="emit('copyLine')">
-      <span class="m-ico">⧉</span>复制本行（完整原文）
-    </button>
+    <!-- 复制两项同级，顺序/文案与结果表右键菜单完全一致（选中在前 · 整行在后） -->
     <button v-if="copiedHint === 'copy'" class="mi copied" disabled>
-      <span class="m-ico">✓</span>已复制
+      <span class="m-ico"><AppIcon name="check" :size="12" /></span>已复制
     </button>
-    <button v-else class="mi" :disabled="!selText" :title="selText ? '复制选中文本' : '先选中文本再复制'" @click="emit('copy')">
-      <span class="m-ico">⧉</span>复制选中文本
+    <button v-else class="mi" :disabled="!selText" :title="selText ? '复制鼠标划选的文本' : '先选中文本再复制'" @click="emit('copy')">
+      <span class="m-ico"><AppIcon name="copy" :size="12" /></span>复制选中文本
+    </button>
+    <button v-if="copiedHint === 'copyLine'" class="mi copied" disabled>
+      <span class="m-ico"><AppIcon name="check" :size="12" /></span>已复制
+    </button>
+    <button v-else class="mi" :title="'复制整行的完整原文（不受显示截断限制）'" @click="emit('copyLine')">
+      <span class="m-ico"><AppIcon name="copy" :size="12" /></span>复制整行
     </button>
     <div class="sep"></div>
     <button
@@ -132,14 +134,14 @@ function onScroll() { emit('close') }
       :title="selText ? '选择颜色给选中内容加标记' : '先选中文本，再选颜色加标记'"
       @mouseenter="enterItem('mark')" @click.stop="toggleSub('mark')"
     >
-      <span class="m-ico">◉</span>加标记<span class="m-arrow">▸</span>
+      <span class="m-ico"><AppIcon name="zap" :size="12" /></span>加标记<span class="m-arrow"><AppIcon name="chevron-right" :size="10" /></span>
     </button>
     <div class="sep"></div>
     <button
       ref="clearItem" class="mi has-sub" :class="{ active: open === 'clear' }" :disabled="!usedSlots.length"
       @mouseenter="enterItem('clear')" @click.stop="toggleSub('clear')"
     >
-      <span class="m-ico">◌</span>清除标记<span class="m-arrow">▸</span>
+      <span class="m-ico"><AppIcon name="x" :size="12" /></span>清除标记<span class="m-arrow"><AppIcon name="chevron-right" :size="10" /></span>
     </button>
 
     <!-- 加标记子菜单：通道色条项，hover 整行染对应软色底即预览 -->
@@ -152,7 +154,7 @@ function onScroll() { emit('close') }
         v-for="(name, i) in SLOT_NAMES" :key="i" class="mi ch" :class="'mark-' + i"
         :disabled="!selText" :title="selText ? '用' + name + '色标记选中内容' : '先选中要标记的文本'"
         @click="emit('mark', i)"
-      ><i class="ch-bar"></i>标记 {{ i + 1 }} · {{ name }}</button>
+      ><i class="ch-dot"></i>{{ name }}<span class="ch-tag">标记 {{ i + 1 }}</span></button>
     </div>
 
     <!-- 清除子菜单：仅列出使用中的槽位 + 清除全部 -->
@@ -165,10 +167,10 @@ function onScroll() { emit('close') }
         v-for="c in usedSlots" :key="c" class="mi ch" :class="'mark-' + c"
         :title="'清除所有用标记' + (c + 1) + '标的词'"
         @click="emit('clearSlot', c)"
-      ><i class="ch-bar"></i>标记 {{ c + 1 }} · {{ SLOT_NAMES[c] }}</button>
+      ><i class="ch-dot"></i>{{ SLOT_NAMES[c] }}<span class="ch-tag">标记 {{ c + 1 }}</span></button>
       <div class="sep"></div>
       <button class="mi" title="清除全部标记" @click="emit('clearAll')">
-        <span class="m-ico">✕</span>清除所有标记
+        <span class="m-ico"><AppIcon name="x" :size="12" /></span>清除所有标记
       </button>
     </div>
   </div>
@@ -215,11 +217,12 @@ function onScroll() { emit('close') }
 .mi {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
   position: relative;
   width: 100%;
-  height: 28px;
-  padding: 0 10px 0 8px;
+  height: 30px;
+  padding: 0 10px;
   background: none;
   border: none;
   border-radius: 5px;
@@ -232,11 +235,11 @@ function onScroll() { emit('close') }
 /* 禁用态保持可读（全局 .4 太灰像整菜单失效），色淡但字迹清楚 */
 .mi:disabled { opacity: .65; color: var(--text-faint); cursor: default; }
 .mi:disabled .m-ico { opacity: .5; }
+/* 图标裸排（与结果表 row-menu-item 同构）：字符图标时代的 18px 定宽槽会让
+   SVG 图标起点与结果页不一致（用户实测截图对比），弃槽改 flex+gap 直排 */
 .m-ico {
-  width: 18px;
+  display: inline-flex;
   flex: none;
-  text-align: center;
-  font-family: var(--mono);
   color: var(--text-dim);
 }
 .m-arrow { margin-left: auto; color: var(--text-faint); font-size: 10px; }
@@ -254,14 +257,18 @@ function onScroll() { emit('close') }
 }
 .sep { height: 1px; margin: 4px 6px; background: var(--border); }
 
-/* 通道色条（签名元素）：色值经 .mark-N 的 --hl-bg/--hl-fg 变量驱动，不硬编码 */
+/* 标记色点（V1 实色圆点）：色值取 .mark-N 的 --hl-fg 实色（夜间为亮前景）——
+   原先 3px 色条用 36% 透明的 --hl-bg，夜间几乎不可见（用户实测反馈） */
 .ch { padding-left: 7px; }
-.ch-bar {
-  width: 3px;
-  height: 16px;
-  flex: none;
-  border-radius: 1.5px;
-  background: var(--hl-bg);
+.ch-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  flex: none; margin: 0 3px 0 2px;
+  background: var(--hl-fg);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25); /* 深色内描边压住浅底色 */
+}
+.ch-tag {
+  margin-left: auto; font-family: var(--mono); font-size: 9px; color: var(--text-faint);
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
 }
 /* 悬停整行染该标记软色底——悬停即预览标记色；写在 .mi:hover 之后覆盖通用灰底 */
 .mi.ch:hover:not(:disabled) {

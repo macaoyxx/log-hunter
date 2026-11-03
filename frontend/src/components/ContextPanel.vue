@@ -108,7 +108,7 @@ function onCtx(e: MouseEvent) {
 function menuCopiedOK(kind: 'copy' | 'copyLine') {
   if (menu.value) menu.value = { ...menu.value, copied: kind }
   window.clearTimeout(menuCloseTimer)
-  menuCloseTimer = window.setTimeout(() => { menu.value = null }, 700)
+  menuCloseTimer = window.setTimeout(() => { menu.value = null }, 600) // 「已复制」反馈 0.6s（与结果表右键一致）
 }
 async function copySel() {
   const sel = menu.value?.sel

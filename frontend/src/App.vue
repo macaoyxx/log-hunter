@@ -102,12 +102,27 @@ function fmtMB(n: number): string {
   return n > 0 ? (n / 1024 / 1024).toFixed(1) + ' MB' : ''
 }
 
+// 检查更新（GitHub Desktop 模式）：结果生命周期绑定设置菜单开关——菜单关闭即清空
+//（ThemePopover @closed），重开回到徽标初始态，点击才查。请求代次 seq 防乱序：
+// 菜单关闭清空后旧请求迟到，不得把过期结果回写进新的展示周期
+let checkSeq = 0
 function doCheckUpdate() {
-  if (updateInfo.value === 'checking') return // 检查中防重复触发（后发先至会覆盖结果）
+  if (updateInfo.value === 'checking') return // 检查中防重复触发
+  const seq = ++checkSeq
   updateInfo.value = 'checking'
-  CheckUpdate().then(u => { updateInfo.value = u }).catch(e => {
-    updateInfo.value = { latest: '', hasUpdate: false, err: String(e) } as main.UpdateInfo
+  CheckUpdate().then(u => { if (seq === checkSeq) updateInfo.value = u }).catch(e => {
+    if (seq === checkSeq) updateInfo.value = { latest: '', hasUpdate: false, err: String(e) } as main.UpdateInfo
   })
+}
+// 菜单关闭：丢弃检查结果，回到初始态（「检查更新」项只显示版本徽标）。
+// 同步作废飞行中的请求（bump seq）——否则旧请求返回时 seq 相等仍会回写，
+// 重开菜单就会看到过期结果（review 实证竞态窗口）。
+// 更新流程弹窗激活期间例外——确认/下载页依赖 updInfo（来自检查结果），不能清
+function onSettingsClosed() {
+  if (!updFlow.value) {
+    checkSeq++
+    updateInfo.value = null
+  }
 }
 
 // 自动更新三段式：确认 → 下载替换（进度）→ 就绪后由用户选立即/稍后重启
@@ -382,7 +397,7 @@ function openContext(fileId: number, offset: number) {
   <div class="app">
     <SideRail
       :files="files" :selected="selected" :loading="loadingFiles" :progress="fileProg" :file-total="fileTotal"
-      :stats="stats" :querying="querying" :query-progress="queryProg" :collapsed="railCollapsed" :version="appVersion"
+      :stats="stats" :querying="querying" :query-progress="queryProg" :collapsed="railCollapsed"
       @add="addFiles" @remove="removeFile" @clear="clearAll" @toggle="toggleSelect"
       @toggle-all="toggleAllFiles" @toggle-rail="toggleRail" @level-filter="levelClick"
     />
@@ -396,18 +411,25 @@ function openContext(fileId: number, offset: number) {
         <template #actions>
           <div class="actions">
             <ThemePopover ref="themePopRef" :appearance="themePref" :palette="palettePref"
-              @set-appearance="setAppearance" @set-palette="setPalette">
+              @set-appearance="setAppearance" @set-palette="setPalette" @closed="onSettingsClosed">
               <template #menu>
-                <button class="mi" @click="doCheckUpdate"><AppIcon name="refresh-cw" :size="12" />检查更新</button>
-                <button class="mi" @click="themePopRef?.close(); aboutOpen = true"><AppIcon name="info" :size="12" />关于 LogHunter</button>
-                <div v-if="updateInfo === 'checking'" class="upd-msg">正在检查…</div>
-                <template v-else-if="updInfo">
+                <button class="mi" @click="doCheckUpdate">
+                  <span class="ico"><AppIcon name="refresh-cw" :size="13" /></span>
+                  <span class="lab"><span>检查更新</span><span class="sub">GitHub Releases</span></span>
+                  <span v-if="updateInfo === 'checking'" class="ck">检查中…</span>
+                </button>
+                <button class="mi" @click="themePopRef?.close(); aboutOpen = true">
+                  <span class="ico"><AppIcon name="info" :size="13" /></span>
+                  <span class="lab"><span>关于</span></span>
+                </button>
+                <template v-if="updInfo && updateInfo !== 'checking'">
                   <template v-if="updInfo.err">
                     <div class="upd-msg">检查失败：{{ updInfo.err }}</div>
                   </template>
                   <template v-else-if="updInfo.hasUpdate">
                     <button v-if="updInfo.assetUrl" class="mi upd-cta" @click="beginUpdate">
-                      <AppIcon name="download" :size="12" />自动更新到 v{{ updInfo.latest }}
+                      <span class="ico"><AppIcon name="download" :size="13" /></span>
+                      <span class="lab"><span>自动更新到 v{{ updInfo.latest }}</span><span class="sub">下载 · 校验 · 自动替换</span></span>
                     </button>
                     <div class="upd-msg link" title="打开发布页手动下载" @click="openReleases">
                       发现新版本 v{{ updInfo.latest }}
@@ -519,22 +541,39 @@ function openContext(fileId: number, offset: number) {
   flex: none;
 }
 /* 设置弹层内的菜单项（检查更新/关于/更新 CTA） */
+/* 设置弹层内菜单项（图标槽行，与 ThemePopover .mi 同款——scoped 不穿透 slot，
+   两侧各自定义）：显式 flex-start 覆盖全局 button 的 justify-content:center */
 .mi {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 11px;
   width: 100%;
-  height: 28px;
+  height: 44px;
   padding: 0 10px;
   background: none;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 12px;
+  font-size: 12.5px;
   text-align: left;
   cursor: pointer;
 }
 .mi:hover { background: var(--bg-hover); border: none; }
+.mi .ico {
+  width: 28px; height: 28px; border-radius: 7px; background: var(--bg-elev);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-dim); flex: none;
+}
+.mi:hover .ico { color: var(--accent-strong); }
+.mi .lab { display: flex; flex-direction: column; gap: 1px; align-items: flex-start; min-width: 0; }
+.mi .sub { font-size: 10px; color: var(--text-faint); line-height: 1.3; }
+.mi .badge {
+  margin-left: auto; font-family: var(--mono); font-size: 9.5px;
+  color: var(--accent-strong); background: var(--accent-soft);
+  border: 1px solid var(--accent-line); border-radius: 999px; padding: 1px 7px;
+}
+.mi .ck { margin-left: auto; font-size: 11px; color: var(--text-faint); }
 .upd-msg {
   padding: 6px 10px 4px;
   color: var(--text-dim);

@@ -16,7 +16,6 @@ const props = defineProps<{
   querying: boolean
   queryProgress?: { scanned: number; total: number; matched: number } | null
   collapsed: boolean
-  version: string
 }>()
 const emit = defineEmits<{
   (e: 'add', paths: string[]): void
@@ -215,7 +214,6 @@ onUnmounted(() => window.clearInterval(memTimer))
       <div class="st-row dim2">
         <span>App {{ fmtMem(mem.ws) }}</span>
         <span>系统 {{ fmtMem(mem.sysUsed) }}/{{ fmtMem(mem.sysTotal) }}</span>
-        <span class="ver">v{{ version.replace('-dev', '') }}</span>
       </div>
     </div>
   </aside>
@@ -477,7 +475,6 @@ onUnmounted(() => window.clearInterval(memTimer))
 .st-row.dim2 { justify-content: space-between; color: var(--text-dim); }
 .statcard .ok { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
 .statcard .ok.busy { background: var(--accent-strong); animation: pulse 1.2s ease-in-out infinite; }
-.statcard .ver { color: var(--text-faint); }
 @keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .statcard .ok.busy { animation: none; } }
 

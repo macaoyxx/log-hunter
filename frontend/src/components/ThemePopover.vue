@@ -9,6 +9,7 @@ defineProps<{ appearance: Appearance; palette: PaletteId }>()
 const emit = defineEmits<{
   (e: 'set-appearance', a: Appearance): void
   (e: 'set-palette', p: PaletteId): void
+  (e: 'closed'): void
 }>()
 
 const open = ref(false)
@@ -21,8 +22,10 @@ if (typeof document !== 'undefined') {
   document.addEventListener('click', onDocClick)
   onUnmounted(() => document.removeEventListener('click', onDocClick))
 }
-// 收起并回到一级（菜单项点击/点外部共用）
-function close() { open.value = false; view.value = 'menu' }
+// 收起并回到一级（菜单项点击/点外部共用）。
+// closed 事件：App 层借此清空检查更新等瞬态结果——结果生命周期绑定菜单开关
+//（GitHub Desktop 模式：关菜单丢弃，重开徽标初始态，点击才查）
+function close() { open.value = false; view.value = 'menu'; emit('closed') }
 // 显式导航 + 阻断冒泡：防上层点击处理把弹层收掉导致「点了没反应」
 function go(v: 'menu' | 'theme') { view.value = v }
 defineExpose({ close })
@@ -33,11 +36,12 @@ defineExpose({ close })
     <button class="tp-btn" :class="{ open }" title="设置（主题 / 检查更新 / 关于）" @click="open = !open">
       <AppIcon name="theme" :size="15" />
     </button>
-    <div v-if="open" class="tp-pop">
-      <!-- 一级菜单 -->
+    <div v-if="open" class="tp-pop" :class="{ 'tp-pop-menu': view === 'menu' }">
+      <!-- 一级菜单（图标槽行版）：图标底槽 + 主/副标题两行 + 右侧元素 -->
       <template v-if="view === 'menu'">
-        <button class="l1" type="button" @click.stop="go('theme')">
-          <AppIcon name="theme" :size="13" /><span>主题</span>
+        <button class="mi" type="button" @click.stop="go('theme')">
+          <span class="ico"><AppIcon name="theme" :size="13" /></span>
+          <span class="lab"><span>主题</span><span class="sub">外观 · 主题色</span></span>
           <AppIcon name="chevron-right" :size="12" class="go" />
         </button>
         <div class="tp-sep"></div>
@@ -82,16 +86,32 @@ defineExpose({ close })
   background: var(--bg-float); border: 1px solid var(--border-strong);
   border-radius: var(--radius); box-shadow: var(--shadow-pop), var(--sheen-light);
 }
-/* 一级菜单项 */
-.l1 {
-  display: flex; align-items: center; gap: 9px; width: 100%;
-  height: 30px; padding: 0 10px;
-  background: none; border: none; border-radius: 6px;
+.tp-pop-menu { width: 272px; padding: 8px; }
+/* 一级菜单项（图标槽行）：显式 flex-start——全局 button 的 justify-content:center
+   会把内容顶成居中（flex 下 text-align 无效），本组件与插槽菜单项都基于 .mi */
+.mi {
+  display: flex; align-items: center; justify-content: flex-start; gap: 11px;
+  width: 100%; height: 44px; padding: 0 10px;
+  background: none; border: none; border-radius: var(--radius-sm);
   color: var(--text); font-size: 12.5px; text-align: left; cursor: pointer;
 }
-.l1:hover { background: var(--bg-hover); border: none; }
-.l1 .go { margin-left: auto; color: var(--text-faint); }
-.tp-sep { height: 1px; background: var(--border); margin: 5px -4px; }
+.mi:hover { background: var(--bg-hover); border: none; }
+.mi .ico {
+  width: 28px; height: 28px; border-radius: 7px; background: var(--bg-elev);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-dim); flex: none;
+}
+.mi:hover .ico { color: var(--accent-strong); }
+.mi .lab { display: flex; flex-direction: column; gap: 1px; align-items: flex-start; min-width: 0; }
+.mi .sub { font-size: 10px; color: var(--text-faint); line-height: 1.3; }
+.mi .go { margin-left: auto; color: var(--text-faint); }
+.mi .badge {
+  margin-left: auto; font-family: var(--mono); font-size: 9.5px;
+  color: var(--accent-strong); background: var(--accent-soft);
+  border: 1px solid var(--accent-line); border-radius: 999px; padding: 1px 7px;
+}
+.mi .ck { margin-left: auto; font-size: 11px; color: var(--text-faint); }
+.tp-sep { height: 1px; background: var(--border); margin: 6px 4px; }
 /* 二级头 */
 .l2-head {
   display: flex; align-items: center; gap: 4px; margin-bottom: 8px;

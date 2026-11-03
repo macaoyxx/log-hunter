@@ -25,11 +25,11 @@ internal/logscan/   核心引擎 —— 纯库，严禁 import Wails 或任何 U
 ├── merge.go        时间合并排序（锚点 key+索引置换）与分组顺序读
 ├── resultlimit.go  结果上限内存自适应（Windows 物理内存查询）
 ├── unzip.go        zip 解压（内容级二进制校验、嵌套 zip 递归≤3 层、临时目录生命周期与启动清扫）
-internal/appconf/   应用配置持久化 —— 纯库：data/config.json（主题+查询历史），不含 UI
-internal/update/    应用内自动更新 —— 纯库：下载（进度回调）/sha256 校验/解压/rename 自替换
+internal/appconf/   应用配置持久化 —— 纯库：data/config.json（settings.theme 主题偏好+查询历史，旧顶层 theme 读时自动迁移），不含 UI
+internal/update/    应用内自动更新 —— 纯库：下载（进度回调）/sha256 强制校验（Release 缺 .sha256 即拒更）/解压限长/rename 自替换
 app.go              Wails 绑定层：包装 logscan.Session，进度事件、系统对话框、剪贴板、更新编排
 main.go             Wails 入口（窗口/拖拽/主题配置/启动埋点）
-frontend/src/       Vue 3 界面（手写组件，无 UI 框架/无 router/无状态管理库）
+frontend/src/       Vue 3 界面（指挥舱布局：SideRail 左指挥轨+指令条+结果表；手写组件，无 UI 框架/无 router/无状态管理库）
 cmd/logscan-bench/  性能验收基准
 cmd/stress-bench/   20GB 压力基准（双模式，全环节耗时+内存采样）
 tools/              辅助工具（纯 Go，不进产物）：genicon 图标生成 / packzip 跨平台压缩（发版脚本用）
@@ -44,7 +44,7 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 
 ## 改核心引擎前必读的设计约束
 
-这些是性能设计的一部分，改动前先理解动机（详细原理与实测数据见 `docs/design.md`）：
+这些是性能设计的一部分，改动前先理解动机（详细原理与实测数据见 `docs/design.md`；引擎共享状态并发铁律见 `.memory/session-concurrency.md`，结果表画布宽机制见 `.memory/result-canvas-layout.md`）：
 
 1. **查询与结果构建分离**：查询只收集命中偏移；预览文本由前端按窗口经 `GetResults(offset, limit)` 惰性拉取。不要在查询阶段构建结果文本。
 2. **元数据索引而非全文索引**：时间/级别走内存索引（偏移/时间戳/级别平行数组，17B/行）直查；无时间条件才并行全扫。级别计数/最长行在 `buildIndex` 顺带预计算——**不要在查询期重扫全行算统计**。
@@ -56,7 +56,7 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 8. **编码**：GBK/UTF-8 自动探测；GBK 文件的关键字与正则按 GBK 字节匹配（预转换进 matcher），含 Unicode 范围类的正则不适用 GBK；高亮在 UTF-8 侧。
 9. **防御上限**：单行显示 64KB 截断（`capLine`）；zip 解压总量按物理内存自适应（`calcMaxUnzipBytes`：8GB 保底~128GB 封顶）；**复制整行走后端**（`CopyLineText`/`CopyText` 直写系统剪贴板）——前端剪贴板 API（navigator.clipboard / 前端 ClipboardSetText）对大文本会截断，禁止前端自行写剪贴板。
 10. 正则一律 Go RE2（`regexp` 标准库），天然免疫灾难性回溯——禁止引入第三方正则库。
-11. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录并同步清去重登记（删光后重拖可加载）、`ClearAll`/退出删根目录（失败重试 3 次）；崩溃残留由启动 `SweepStaleTemp` 清扫（目录年龄 >1h + 锁文件探针双护栏防误删活实例，幂等重试）；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收；嵌套 zip 按内容魔数（PK 头）递归解压，限 3 层，解压总量上限（按物理内存自适应，8GB 保底~128GB 封顶）全树共享（含内层 scratch），每层独立 zip-<seq> 子目录随移除隔离清理。
+11. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录并同步清去重登记（删光后重拖可加载）、`ClearAll`/退出删根目录（失败重试 3 次）；崩溃残留由启动 `SweepStaleTemp` 清扫（目录年龄 >1h + 锁文件探针双护栏防误删活实例，幂等重试）；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收；嵌套 zip 按内容魔数（PK 头）递归解压，限 3 层，解压总量上限（按物理内存自适应，8GB 保底~128GB 封顶）**会话累计共享**（含内层 scratch，单条目写盘按剩余预算 CopyN 硬限防炸弹），每层独立 zip-<seq> 子目录随移除隔离清理。
 
 ## 编码约定
 
@@ -66,7 +66,7 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 - 主题系统在 `App.vue`（外观三态 auto/light/dark + 主题色五套 ice/teal/green/plat/amber，localStorage `lh-theme`/`lh-palette` + matchMedia），启动预设在 `main.ts`（防闪色），勿在别处操作 `data-theme`/`data-palette`；持久化走 `SetThemeSettings`（config.json `settings.theme`）。图标一律 `AppIcon.vue` + `icons.ts` 手写 SVG，勿引图标库或用 emoji。
 - 详情面板右键菜单（`ContextMenu.vue`）与格式标记槽位（`ContextPanel.vue` 内 5 槽）是纯前端状态，面板卸载即清；标记优先于查询高亮（重叠区间让位），该优先级在 `HighlightText.vue` 的区间裁剪逻辑里，改动保持。
 - 大结果集靠虚拟滚动 + 分段续载，任何列表改动不得破坏这一点。行渲染用**槽位复用**（`v-for` 的 key 是段内槽位号而非全局行号，内容经 `visibleRows` computed 驱动）——改成全局行号作 key 会退化成滚动时逐行挂载/卸载；无高亮条件时走纯文本插值快速路径（跳过 HighlightText 实例化）。
-- 结果表横向画布宽度封顶 `MAX_CANVAS_W`（20 万 px）——极长行（如整行 SQL dump 数十万字节）按 12px/rune 撑开会是数百万 px 的超大层，WebView 光栅化直接卡死界面（v0.0.5 实测 75 万 rune → 901 万 px 全界面卡）；超长行看全文走双击行的上下文面板。
+- 结果表横向画布宽**随当前渲染窗口实测伸缩**（`seenMaxPx`，非 maxLineLen 预估/grow-only——两种错法实测均有大空白或滚动条失效问题，详见 `.memory/result-canvas-layout.md`），封顶 `MAX_CANVAS_W`（20 万 px，极长行光栅化卡死防线）；超长行看全文走双击行的上下文面板。
 
 ## 其他
 

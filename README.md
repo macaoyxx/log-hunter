@@ -159,6 +159,8 @@ go run ./tools/genicon   # 重新生成应用图标（build/appicon.png + icon.i
 | 文档 | 内容 |
 |---|---|
 | [Wails 拖放陷阱](.memory/wails-dragdrop.md) | 文件拖放必须走 OnFileDrop 注册（preventDefault + Windows 桥接都挂在其内部），EventsOn 直听永远收不到 |
+| [结果表画布宽与列宽机制](.memory/result-canvas-layout.md) | 画布宽必须随渲染窗口实测伸缩（预估/grow-only/字符估算三种错法均实测有坑）；flex 子项 nowrap 的 min-width:auto 会顶开 width 使省略失效 |
+| [引擎共享状态并发铁律](.memory/session-concurrency.md) | results/stats/mode 等五字段读写必须在 s.mu 锁内（锁外写曾致崩溃级竞争）；lastEmit 原子化与去重 TOCTOU 复查同批修复 |
 
 ## License
 

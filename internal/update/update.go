@@ -5,8 +5,8 @@
 package update
 
 import (
-	"context"
 	"archive/zip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -36,7 +36,7 @@ func Download(ctx context.Context, url, savePath string, onProgress func(Downloa
 	if err != nil {
 		return fmt.Errorf("构建请求失败: %w", err)
 	}
-	req.Header.Set("User-Agent", "log-hunter") // GitHub 硬性要求 UA
+	req.Header.Set("User-Agent", "log-hunter")        // GitHub 硬性要求 UA
 	client := &http.Client{Timeout: 10 * time.Minute} // 12MB 量级，慢网也要给足
 	resp, err := client.Do(req)
 	if err != nil {
@@ -139,12 +139,18 @@ func ExtractExe(zipPath, destPath string) error {
 			rc.Close()
 			return err
 		}
-		_, werr := io.Copy(out, rc)
+		// CopyN 硬限实际解压量：UncompressedSize64 只是 zip 头声明值可伪造，
+		// 「声明小实解大」的炸弹流必须在写盘侧拦住
+		n, werr := io.CopyN(out, rc, maxExeBytes+1)
 		rc.Close()
 		out.Close()
-		if werr != nil {
+		if werr != nil && werr != io.EOF {
 			_ = os.Remove(destPath)
 			return fmt.Errorf("解压失败: %w", werr)
+		}
+		if n > maxExeBytes {
+			_ = os.Remove(destPath)
+			return fmt.Errorf("更新包条目实际解压量超限（声明值与实际不符）")
 		}
 		return nil
 	}
@@ -152,35 +158,38 @@ func ExtractExe(zipPath, destPath string) error {
 }
 
 // Apply 替换当前 exe：Windows 运行中的 exe 不可覆盖但可改名——旧 exe 改名 .old
-// 让位、新 exe 落位原名；第二步失败自动回滚保持可启动。落位优先同盘原子 rename，
-// 跨盘卷 rename 会报错（更新临时目录在系统盘、exe 可能装在任意盘）——降级为
-// 复制到 exe 同盘的 .new 临时名再原子改名。残留的 .old 由新进程启动时 CleanupOld
-// 清理（旧进程退出释放文件锁有时差）
+// 让位、新 exe 落位原名；落位失败自动回滚保持可启动。
+// 顺序关键：先把新版复制到 exe 同盘 .new（新旧盘符无关统一处理），让位之后只剩
+// 一次同盘原子 rename——exe 缺失窗口压到毫秒级。此前「先让位再试跨盘 rename」在
+// 跨盘场景第一步就 EXDEV 必败，空窗横跨整个复制时长，期间断电/崩溃 = 应用变砖。
+// 残留的 .old 由新进程启动时 CleanupOld 清理（旧进程退出释放文件锁有时差）
 func Apply(newExe, currentExe string) error {
 	old := currentExe + ".old"
-	_ = os.Remove(old) // 清掉上次更新未及清理的残留
-	if err := os.Rename(currentExe, old); err != nil {
-		return fmt.Errorf("旧版本让位失败: %w", err)
-	}
-	rollback := func(cause error) error {
-		if rbErr := os.Rename(old, currentExe); rbErr != nil {
-			return fmt.Errorf("新版落位失败且回滚失败（请手动把 %s 改回 %s）: 落位 %v / 回滚 %v",
-				old, currentExe, cause, rbErr)
-		}
-		return fmt.Errorf("新版落位失败（已回滚旧版本）: %w", cause)
-	}
-	if err := os.Rename(newExe, currentExe); err == nil {
-		return nil // 同盘：一步到位
-	}
-	// 跨盘卷：复制到 exe 同盘临时名（.new），再同盘原子改名落位
 	tmp := currentExe + ".new"
+	if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+		// 残留 .old 删不掉（AV/旧进程占用）时后续让位 rename 必失败——提前暴露真实原因
+		return fmt.Errorf("上次更新残留 %s 无法删除（可能被占用）: %w", old, err)
+	}
+	// 新版先就位到同盘 .new（此阶段不动旧 exe，失败无任何影响）
 	if cerr := copyFile(newExe, tmp); cerr != nil {
 		_ = os.Remove(tmp)
-		return rollback(cerr)
+		return fmt.Errorf("新版预备失败（未动旧版本）: %w", cerr)
+	}
+	if err := os.Rename(currentExe, old); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("旧版本让位失败: %w", err)
 	}
 	if rerr := os.Rename(tmp, currentExe); rerr != nil {
 		_ = os.Remove(tmp)
-		return rollback(rerr)
+		// 回滚：old 与原路径同盘（rename 产物），失败仅剩 AV 瞬时锁可能，重试一次
+		if rbErr := os.Rename(old, currentExe); rbErr != nil {
+			time.Sleep(300 * time.Millisecond)
+			if rbErr2 := os.Rename(old, currentExe); rbErr2 != nil {
+				return fmt.Errorf("新版落位失败且回滚失败（请手动把 %s 改回 %s）: 落位 %v / 回滚 %v",
+					old, currentExe, rerr, rbErr2)
+			}
+		}
+		return fmt.Errorf("新版落位失败（已回滚旧版本）: %w", rerr)
 	}
 	return nil
 }

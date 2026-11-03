@@ -85,6 +85,7 @@ func openPath(path string) (*Store, error) {
 //  2. appearance/palette 非法或缺失回落默认（auto/ice）；
 //  3. 旧数据有变更则立刻回写为新格式（顶层 theme 键从此消失）；
 //     全新安装（无文件/损坏）只回落内存默认，不主动建盘。
+//
 // 迁移写失败不报错：下次任意写入时自然修复
 func (s *Store) migrate(loaded bool) {
 	t := s.conf.Settings.Theme

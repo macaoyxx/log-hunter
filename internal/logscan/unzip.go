@@ -55,8 +55,11 @@ func (s *Session) addZip(ctx context.Context, zipPath string, fileNo int, onProg
 	startSeq := s.zipDirSeq // 本包新增目录的序号区间起点（失败清理用）
 	s.zipDirSeq++
 	dest := filepath.Join(s.tempRoot, fmt.Sprintf("zip-%d", s.zipDirSeq))
-	var written int64
+	// 预算按会话累计：起始带入历史用量、结束写回——一批拖入 N 个 zip 共享同一上限
+	//（此前每 zip 独享预算，串行 N 个可累积 N×上限磁盘占用）。zip 任务在 AddFiles 内串行执行
+	written := s.unzipUsed
 	files, notices, err := s.extractZip(ctx, abs, dest, 1, "", &written, fileNo, onProgress)
+	s.unzipUsed = written
 	if err != nil {
 		s.cleanupZipDirs(startSeq) // 失败/取消：不留半解压残留（含内层 zip 的兄弟目录）
 		return nil, notices, err
@@ -219,7 +222,16 @@ func (s *Session) extractZip(ctx context.Context, zipPath, dest string, depth in
 		_, werr := outf.Write(head)
 		if werr == nil {
 			var cp int64
-			cp, werr = io.Copy(outf, rc)
+			// 单条目写盘硬限：只写剩余预算字节（zip 头声明值可伪造，压缩比极高的
+			// 单条文本炸弹能在事后总量检查前写满磁盘）；触限后由下方总量判定报错
+			remain := s.maxUnzipBytes - *writtenTotal - int64(n)
+			if remain < 0 {
+				remain = 0
+			}
+			cp, werr = io.CopyN(outf, rc, remain)
+			if werr == io.EOF {
+				werr = nil // 未触限正常读完
+			}
 			size = int64(n) + cp
 		}
 		_ = outf.Close()
@@ -254,7 +266,15 @@ func (s *Session) extractInnerZip(ctx context.Context, rc io.ReadCloser, head []
 		return nil, append(notices, display+"（创建失败）"), nil
 	}
 	n1, _ := outf.Write(head)
-	n2, cperr := io.Copy(outf, rc)
+	// scratch 落盘硬限剩余预算（同外层条目：声明可伪造，炸弹流在事后检查前拦截）
+	remain := s.maxUnzipBytes - *writtenTotal - int64(n1)
+	if remain < 0 {
+		remain = 0
+	}
+	n2, cperr := io.CopyN(outf, rc, remain)
+	if cperr == io.EOF {
+		cperr = nil // 未触限正常读完
+	}
 	_ = outf.Close()
 	if cperr != nil || n1 != len(head) {
 		_ = os.Remove(scratch)

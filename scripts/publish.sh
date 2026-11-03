@@ -42,7 +42,13 @@ echo "Release:    $tag"
 echo "产物:       $zip_path ($zip_size)"
 echo "Notes:      $notes"
 echo ""
-read -r -p "确认发布到 GitHub？输入 yes 继续（其他任意输入取消）: " answer
+# 确认门必须绑定 /dev/tty：read 读 stdin 时 `echo yes |` 即可绕过（发布铁律要求
+# 人在终端输入）；stdin 非 tty（脚本/管道调用）直接拒绝
+if [[ ! -t 0 ]]; then
+  echo "拒绝发布：stdin 不是终端（检测到脚本/管道调用）。请在终端手动运行本脚本。"
+  exit 1
+fi
+read -r -p "确认发布到 GitHub？输入 yes 继续（其他任意输入取消）: " answer < /dev/tty
 if [[ "$answer" != "yes" ]]; then
   echo "已取消发布。产物保留在 $zip_path"
   echo "手动上传：https://github.com/macaoyxx/log-hunter/releases/new （选择 tag $tag，拖入 zip）"

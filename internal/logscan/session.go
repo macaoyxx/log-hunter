@@ -56,6 +56,9 @@ type Session struct {
 	tempLock  *os.File        // 临时根锁文件句柄（持至进程退出，供其他实例启动清扫探活）
 	zipDirSeq int             // zip 子目录序号
 	zips      map[string]bool // 已加载 zip 源绝对路径（防重复拖入双份内存；目录清空时同步清除）
+	// 本会话累计解压字节数：上限语义是「批次/会话总量」而非单 zip——此前每个 zip
+	// 独享预算，串行拖 N 个 zip 可累积 N×上限的磁盘占用。AddFiles 的 zip 任务串行执行，无并发写
+	unzipUsed int64
 }
 
 // NewSession 创建空会话；结果上限与解压上限均按本机物理内存自适应
@@ -329,6 +332,15 @@ func (s *Session) addOne(ctx context.Context, path string, fileNo int, onProgres
 		e.Format = parser.Template
 	}
 	s.mu.Lock()
+	// TOCTOU 复查：路径查重（读锁）到落位（写锁）之间隔着完整索引，并发拖入同一
+	// 路径会双份索引；锁内复查命中则弃用本次资源、返回已有条目
+	for _, ex := range s.entries {
+		if ex.Path == abs {
+			s.mu.Unlock()
+			_ = lf.Close()
+			return ex, nil
+		}
+	}
 	s.nextID++
 	e.ID = s.nextID
 	s.entries = append(s.entries, e)
@@ -375,12 +387,14 @@ func (s *Session) RemoveFile(id int64) {
 			delete(s.zips, zipAbs)
 		}
 	}
-	s.mu.Unlock()
+	// 结果状态必须在锁内置空：GetResults/ExportResults 持读锁并发访问这批字段，
+	// 锁外裸写切片头会撕裂（越界崩溃）或 mode 与结果不一致
 	s.results = nil
 	s.stats = QueryStats{}
 	s.mode = modeQuery // 浏览视图状态一并作废（配合前端自动重查重建）
 	s.browseFiles = nil
 	s.browsePrefix = nil
+	s.mu.Unlock()
 }
 
 // ClearAll 一键清空：释放全部文件、索引与结果，删除 zip 解压临时根目录，马上可以拖入下一批
@@ -395,7 +409,14 @@ func (s *Session) ClearAll() {
 	s.entries = nil
 	s.tempRoot = ""
 	s.zipDirSeq = 0
+	s.unzipUsed = 0 // 临时根已整删，解压累计归零
 	s.zips = make(map[string]bool)
+	// 结果状态同锁内置空（同 RemoveFile：读者持读锁，锁外裸写会撕裂切片头）
+	s.results = nil
+	s.stats = QueryStats{}
+	s.mode = modeQuery
+	s.browseFiles = nil
+	s.browsePrefix = nil
 	s.mu.Unlock()
 	if root != "" {
 		if s.tempLock != nil {
@@ -410,11 +431,6 @@ func (s *Session) ClearAll() {
 			time.Sleep(300 * time.Millisecond)
 		}
 	}
-	s.results = nil
-	s.stats = QueryStats{}
-	s.mode = modeQuery
-	s.browseFiles = nil
-	s.browsePrefix = nil
 	// 引用已全部释放，但 Go GC 惰性（等堆增长才触发）且归还 OS 渐进保守，
 	// 任务管理器内存不会立刻回落——清空是低频操作，强制 GC 并归还空闲页，
 	// 让"零残留"在进程内存上也立即可见
@@ -469,7 +485,7 @@ func (s *Session) RunQuery(ctx context.Context, spec *QuerySpec, onProgress func
 	maxLineLen := 0
 	var scannedBytes int64
 	skippedNoTime := 0
-	lastEmit := time.Now()
+	var lastEmit atomic.Int64 // 上次进度事件时刻（UnixNano）；扫描 worker 并发调用，原子防竞争
 
 	// 纯全览快速路径（无文本+无时间+无级别+平铺）：零物化——不收集结果数组，
 	// Total=Σ行数、永不截断，GetResults 按窗口从行索引现翻译（额外内存≈0），
@@ -611,9 +627,14 @@ func (s *Session) RunQuery(ctx context.Context, spec *QuerySpec, onProgress func
 		} else {
 			// 无时间/级别条件：并行扫全文件，只收集偏移与行长（预览延迟到结果窗口按需生成）
 			matches, serr := scanFile(ctx, e.lf, matcher, func(done, total int64) {
-				if onProgress != nil && time.Since(lastEmit) > 80*time.Millisecond {
-					lastEmit = time.Now()
-					onProgress(QueryProgress{Scanned: scannedBytes + done, Total: totalBytes, Matched: int(matched)})
+				// lastEmit 被多个扫描 worker 并发调用，原子操作防数据竞争
+				//（节流失效是小害，-race 必报才是问题）
+				if onProgress != nil {
+					prev := lastEmit.Load()
+					if time.Since(time.Unix(0, prev)) > 80*time.Millisecond &&
+						lastEmit.CompareAndSwap(prev, time.Now().UnixNano()) {
+						onProgress(QueryProgress{Scanned: scannedBytes + done, Total: totalBytes, Matched: int(matched)})
+					}
 				}
 			})
 			if serr != nil {
@@ -793,8 +814,9 @@ func (s *Session) GetResults(offset, limit int) []ResultRow {
 	if offset < 0 || offset >= total || limit <= 0 {
 		return []ResultRow{}
 	}
+	// offset+limit 可能整型溢出为负（前端传大 limit），钳上界前先防溢出
 	end := offset + limit
-	if end > total {
+	if end < 0 || end > total { // end<0 即溢出
 		end = total
 	}
 	out := s.fetchRows(offset, end)
@@ -985,6 +1007,11 @@ func readSample(lf *lineFile) ([]byte, error) {
 
 // csvEscape CSV 字段转义：含逗号/引号/换行的字段加引号并转义内部引号
 func csvEscape(s string) string {
+	// 公式注入防护：日志内容是不可信数据，= + - @ 开头的字段在 Excel 打开时
+	// 会被当公式执行（=HYPERLINK / =cmd|... ），统一加 ' 前缀中和
+	if len(s) > 0 && (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@') {
+		s = "'" + s
+	}
 	if strings.ContainsAny(s, ",\"\r\n") {
 		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 	}

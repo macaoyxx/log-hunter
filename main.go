@@ -20,8 +20,6 @@ var version = "0.0.13-dev"
 // procStart 进程启动时刻（启动耗时埋点起点）
 var procStart = time.Now()
 
-
-
 func main() {
 	app := NewApp(procStart)
 

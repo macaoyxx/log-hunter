@@ -430,7 +430,11 @@ func (a *App) StartUpdate() error {
 	}); err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
-	if sum.URL != "" {
+	if sum.URL == "" {
+		// sha256 资产缺失即拒绝更新：否则「资产配置错误 = 无校验换 exe」
+		return fmt.Errorf("Release 缺少 .sha256 校验资产，拒绝更新（请检查发布产物）")
+	}
+	{
 		sumPath := filepath.Join(dir, sum.Name)
 		if err := update.Download(a.ctx, sum.URL, sumPath, nil); err != nil {
 			return fmt.Errorf("下载校验文件失败: %w", err)

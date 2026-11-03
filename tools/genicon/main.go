@@ -22,7 +22,7 @@ const BASE = 256.0 // 图形设计基准坐标系（所有 SDF 几何按此定�
 type F = color.RGBA
 
 var (
-	amber = F{245, 165, 36, 255}
+	amber = F{R: 245, G: 165, B: 36, A: 255}
 )
 
 // ---------- SDF 基元（基准坐标系，返回有符号距离，负值在内部） ----------
@@ -124,10 +124,10 @@ func render(size int) *image.RGBA {
 			// 底色：竖向微渐变（上略亮）
 			g := float64(py) / float64(size)
 			base := F{
-				uint8(lerp(24, 13, g)),
-				uint8(lerp(28, 15, g)),
-				uint8(lerp(37, 20, g)),
-				255,
+				R: uint8(lerp(24, 13, g)),
+				G: uint8(lerp(28, 15, g)),
+				B: uint8(lerp(37, 20, g)),
+				A: 255,
 			}
 			type layer struct {
 				col F
@@ -138,7 +138,7 @@ func render(size int) *image.RGBA {
 				layers = append(layers, layer{base, f})
 			}
 			if f := cov[1] / n; f > 0 {
-				layers = append(layers, layer{F{120, 130, 150, 255}, f})
+				layers = append(layers, layer{F{R: 120, G: 130, B: 150, A: 255}, f})
 			}
 			if f := cov[2] / n; f > 0 {
 				layers = append(layers, layer{amber, f})

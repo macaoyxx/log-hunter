@@ -7,3 +7,8 @@ package logscan
 func totalPhysicalMem() int64 {
 	return 8 << 30
 }
+
+// SystemMemory 非 Windows 兜底：总量 8GB、可用 4GB（仅供开发调试展示）
+func SystemMemory() (total, avail int64) {
+	return 8 << 30, 4 << 30
+}

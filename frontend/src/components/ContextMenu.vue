@@ -211,7 +211,7 @@ function onScroll() { emit('close') }
 @media (prefers-reduced-motion: reduce) {
   .cmenu, .sub { animation: none; }
 }
-.mi.copied { color: var(--amber); font-weight: 600; }
+.mi.copied { color: var(--accent-strong); font-weight: 600; }
 .mi {
   display: flex;
   align-items: center;
@@ -250,7 +250,7 @@ function onScroll() { emit('close') }
   bottom: 5px;
   width: 2px;
   border-radius: 1px;
-  background: var(--amber);
+  background: var(--accent-strong);
 }
 .sep { height: 1px; margin: 4px 6px; background: var(--border); }
 

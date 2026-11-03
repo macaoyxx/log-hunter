@@ -162,7 +162,7 @@ const display = computed(() => (model.value || '').replace('T', ' '))
   font-size: 12px;
   padding: 6px 10px;
 }
-.tp-btn.has { border-color: var(--amber-line); color: var(--amber); }
+.tp-btn.has { border-color: var(--accent-line); color: var(--accent-strong); }
 .tp-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-clear { color: var(--text-dim); }
 .tp-clear:hover { color: var(--danger); }
@@ -175,7 +175,7 @@ const display = computed(() => (model.value || '').replace('T', ' '))
   z-index: 60;
   background: var(--bg-float);
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: var(--radius);
   box-shadow: var(--shadow-pop);
   padding: 12px;
   width: 262px;
@@ -206,8 +206,8 @@ const display = computed(() => (model.value || '').replace('T', ' '))
 }
 .tp-cell.empty { cursor: default; }
 .tp-cell:hover { background: var(--bg-float-hover); }
-.tp-cell.today { color: var(--amber); font-weight: 700; }
-.tp-cell.sel { background: var(--amber); color: var(--amber-ink); font-weight: 700; }
+.tp-cell.today { color: var(--accent-strong); font-weight: 700; }
+.tp-cell.sel { background: var(--accent-strong); color: var(--accent-ink); font-weight: 700; }
 .tp-time {
   display: flex;
   align-items: center;

@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ValidateRegex, GetConfig, SaveHistory } from '../../wailsjs/go/main/App'
 import { main, logscan } from '../../wailsjs/go/models'
 import TimePicker from './TimePicker.vue'
+import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{
   disabled: boolean
@@ -284,28 +285,34 @@ const progPct = computed(() => {
 <template>
   <div class="querybar">
     <div class="main">
-      <div class="hist-wrap" ref="histRoot">
-        <button class="q-icon" :class="{ open: showHist }" @click="showHist = !showHist"
-          title="查询历史（点击选择重跑）">🔍<span class="caret">▾</span></button>
-        <div v-if="showHist" class="hist-pop">
-          <div class="hist-title">查询历史（点击重跑）</div>
-          <div v-if="!history.length" class="hist-empty">还没有查询记录</div>
-          <button v-for="(h, i) in history" :key="i" class="hist-item" @click="runHist(h)">{{ h.label }}</button>
+      <div class="inputbox">
+        <AppIcon name="search" :size="13" class="lead" />
+        <input
+          class="q-input" type="text" v-model="keywords"
+          placeholder="想找什么？留空看全部，多个关键字空格隔开（如：E502 超时）"
+          :disabled="disabled"
+          @keydown="onKey"
+        />
+        <div class="hist-wrap" ref="histRoot">
+          <button class="q-icon" :class="{ open: showHist }" @click="showHist = !showHist"
+            title="查询历史（点击选择重跑）">
+            <AppIcon name="history" :size="13" /><AppIcon name="chevron-down" :size="10" />
+          </button>
+          <div v-if="showHist" class="hist-pop">
+            <div class="hist-title">查询历史（点击重跑）</div>
+            <div v-if="!history.length" class="hist-empty">还没有查询记录</div>
+            <button v-for="(h, i) in history" :key="i" class="hist-item" @click="runHist(h)">{{ h.label }}</button>
+          </div>
         </div>
       </div>
-      <input
-        class="q-input" type="text" v-model="keywords"
-        placeholder="想找什么？留空看全部，多个关键字空格隔开（如：E502 超时）"
-        :disabled="disabled"
-        @keydown="onKey"
-      />
       <button v-if="!querying" class="primary" :disabled="disabled || !!regexErr" @click="search">
-        查一下
+        <AppIcon name="crosshair" :size="12" />查一下
       </button>
-      <button v-else class="stop" @click="emit('cancel')">停止</button>
+      <button v-else class="stop" @click="emit('cancel')"><AppIcon name="square" :size="11" />停止</button>
       <button class="ghost adv-toggle" :class="{ open: showAdvanced }" @click="showAdvanced = !showAdvanced">
-        更多条件 ▾
+        更多条件 <AppIcon name="chevron-down" :size="10" />
       </button>
+      <slot name="actions"></slot>
     </div>
 
     <div v-if="showAdvanced" class="advanced">
@@ -391,34 +398,47 @@ const progPct = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  padding: 8px 10px;
-  transition: border-color .15s;
 }
-.main:focus-within { border-color: var(--amber-line); }
+/* 指令条输入框：搜索图标 + 输入 + 历史下拉，聚焦点亮 accent */
+.inputbox {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 6px 0 12px;
+  height: 38px;
+  box-shadow: var(--sheen);
+  transition: border-color .15s, box-shadow .15s;
+}
+.inputbox:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: var(--sheen), 0 0 0 3px var(--accent-soft);
+}
+.lead { color: var(--text-faint); }
 .q-icon {
   background: transparent;
   border: none;
   color: var(--text-dim);
-  font-size: 14px;
-  padding: 4px 6px 4px 2px;
+  padding: 4px 5px;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
+  border-radius: 5px;
 }
-.q-icon:hover { color: var(--amber); background: transparent; border: none; }
-.q-icon.open { color: var(--amber); }
-.caret { font-size: 9px; opacity: .8; }
+.q-icon:hover { color: var(--text); background: var(--bg-hover); border: none; }
+.q-icon.open { color: var(--accent-strong); }
 
 /* 查询历史 */
 .hist-wrap { position: relative; flex: none; }
 .hist-pop {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
   width: 380px; max-height: 300px; overflow-y: auto;
   background: var(--bg-float); border: 1px solid var(--border-strong);
-  border-radius: 10px; box-shadow: var(--shadow-pop);
+  border-radius: var(--radius); box-shadow: var(--shadow-pop), var(--sheen-light);
   padding: 6px;
 }
 .hist-title {
@@ -427,13 +447,14 @@ const progPct = computed(() => {
 }
 .q-input {
   flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
   padding: 6px 4px;
-  font-size: 14px;
+  font-size: 13.5px;
 }
 .q-input:focus { border: none; outline: none; }
-.adv-toggle.open { color: var(--amber); }
+.adv-toggle.open { color: var(--accent-strong); }
 .stop { border-color: var(--danger); color: var(--danger); }
 
 .advanced {
@@ -454,9 +475,9 @@ const progPct = computed(() => {
 .a-re { flex: 1; min-width: 220px; font-family: var(--mono); }
 .a-re.bad { border-color: var(--danger); }
 .a-sep { color: var(--text-dim); }
-.seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .seg button { border: none; border-radius: 0; padding: 5px 10px; font-size: 12px; color: var(--text-dim); background: transparent; }
-.seg button.on { background: var(--amber-soft); color: var(--amber); font-weight: 600; }
+.seg button.on { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
 
 .lvl-pick {
   padding: 4px 10px;
@@ -480,15 +501,15 @@ const progPct = computed(() => {
 }
 .chain-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  background: var(--amber-soft);
-  border: 1px solid var(--amber-line);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
   color: var(--text);
   border-radius: 20px;
   padding: 2px 4px 2px 10px;
   font-size: 12px;
   max-width: 300px;
 }
-.chain-kind { color: var(--amber); font-size: 11px; flex: none; }
+.chain-kind { color: var(--accent-strong); font-size: 11px; flex: none; }
 .chain-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; }
 .chain-x {
   border: none; background: transparent; color: var(--text-dim);
@@ -498,19 +519,19 @@ const progPct = computed(() => {
 
 .qprog { display: flex; align-items: center; gap: 10px; }
 .qprog-bar { flex: 1; height: 6px; background: var(--bg-panel); border-radius: 3px; overflow: hidden; }
-.qprog-fill { height: 100%; background: var(--amber); transition: width .15s; }
+.qprog-fill { height: 100%; background: var(--accent-strong); transition: width .15s; }
 .qprog-text { color: var(--text-dim); font-size: 12px; flex: none; }
 .err {
   color: var(--danger); font-size: 12px;
   background: var(--lvl-4-bg); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  border-radius: 6px; padding: 6px 10px;
+  border-radius: 5px; padding: 6px 10px;
   white-space: pre-wrap;
 }
 
 .hist-empty { color: var(--text-faint); text-align: center; padding: 14px; font-size: 12px; }
 .hist-item {
   display: block; width: 100%; text-align: left;
-  background: transparent; border: none; border-radius: 6px;
+  background: transparent; border: none; border-radius: 5px;
   padding: 6px 10px; font-size: 12px; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -533,7 +554,7 @@ const progPct = computed(() => {
   padding: 6px 10px; color: var(--text); align-items: baseline;
 }
 .tpl-item:hover { background: var(--bg-float-hover); border: none; }
-.tpl-name { font-weight: 600; font-size: 12.5px; color: var(--amber); }
+.tpl-name { font-weight: 600; font-size: 12.5px; color: var(--accent-strong); }
 .tpl-hint { color: var(--text-dim); font-size: 11.5px; }
 .tpl-re {
   grid-column: 2;
@@ -545,14 +566,14 @@ const progPct = computed(() => {
   border-radius: 0; color: var(--text-dim); font-size: 12px; padding: 7px;
   margin-top: 4px;
 }
-.tpl-cheat-toggle:hover { color: var(--amber); }
+.tpl-cheat-toggle:hover { color: var(--accent-strong); }
 .cheat { padding: 8px 10px 4px; display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .cheat-item { font-size: 11.5px; color: var(--text-dim); }
 .cheat-item code {
-  font-family: var(--mono); color: var(--amber);
+  font-family: var(--mono); color: var(--accent-strong);
   background: var(--bg); border-radius: 3px; padding: 0 4px; margin-right: 3px;
 }
-.tpl-wrap > button.open { color: var(--amber); }
+.tpl-wrap > button.open { color: var(--accent-strong); }
 
 /* 时间快捷段 */
 .quick { display: flex; gap: 4px; align-items: center; }

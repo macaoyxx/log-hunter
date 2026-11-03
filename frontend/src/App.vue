@@ -3,15 +3,18 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff, BrowserOpenURL } from '../wailsjs/runtime/runtime'
 import {
   AddFiles, ClearAll, ListFiles, Query, Cancel, RemoveFile,
-  GetVersion, CheckUpdate, StartUpdate, Restart, GetConfig, SetTheme, SetMerged,
+  GetVersion, CheckUpdate, StartUpdate, Restart, GetConfig, SetThemeSettings, SetMerged,
   ReportStartupReady, LastStartupCost,
 } from '../wailsjs/go/main/App'
 import { logscan, main } from '../wailsjs/go/models'
-import FileBar from './components/FileBar.vue'
+import SideRail from './components/SideRail.vue'
 import appicon from './assets/appicon.png'
+import AppIcon from './components/AppIcon.vue'
+import ThemePopover from './components/ThemePopover.vue'
 import QueryBar from './components/QueryBar.vue'
 import ResultTable from './components/ResultTable.vue'
 import ContextPanel from './components/ContextPanel.vue'
+import { DEFAULT_PALETTE, PALETTE_IDS, type Appearance, type PaletteId } from './theme'
 
 // ---------- 全局状态 ----------
 const files = ref<logscan.FileEntry[]>([])
@@ -43,38 +46,49 @@ const ctxTarget = ref<{ fileId: number; offset: number } | null>(null)
 
 const queryBarRef = ref<InstanceType<typeof QueryBar> | null>(null)
 
-// ---------- 昼夜主题（默认 auto 跟随系统；config.json 为权威持久化，localStorage 作第一道防闪与迁移源） ----------
-type ThemePref = 'auto' | 'light' | 'dark'
+// ---------- 主题系统：外观三态 × 主题色五套 ----------
+// config.json 的 settings.theme 为权威持久化，localStorage（lh-theme/lh-palette）作第一道防闪与迁移源
+type ThemePref = Appearance
 const themePref = ref<ThemePref>((localStorage.getItem('lh-theme') as ThemePref) || 'auto')
-const THEME_ICONS: Record<ThemePref, string> = { auto: '🌗', light: '☀️', dark: '🌙' }
-const THEME_TITLES: Record<ThemePref, string> = {
-  auto: '主题：自动（跟随系统）', light: '主题：日间', dark: '主题：夜巡',
-}
+const palettePref = ref<PaletteId>(
+  PALETTE_IDS.includes(localStorage.getItem('lh-palette') as PaletteId)
+    ? localStorage.getItem('lh-palette') as PaletteId : DEFAULT_PALETTE)
 const themeMedia = window.matchMedia('(prefers-color-scheme: dark)')
 
-// 解析当前偏好为实际主题并挂到 <html data-theme>；切换瞬间挂过渡类做背光过渡
+// 解析当前偏好为实际主题/主题色并挂 <html data-theme>/<html data-palette>；
+// 切换瞬间挂过渡类做背光过渡
 function applyTheme() {
   const t = themePref.value === 'auto' ? (themeMedia.matches ? 'dark' : 'light') : themePref.value
   const root = document.documentElement
   root.classList.add('theme-transitioning')
   window.setTimeout(() => root.classList.remove('theme-transitioning'), 300)
   root.dataset.theme = t
+  root.dataset.palette = palettePref.value
 }
-function cycleTheme() {
-  const order: ThemePref[] = ['auto', 'light', 'dark']
-  themePref.value = order[(order.indexOf(themePref.value) + 1) % order.length]
-  localStorage.setItem('lh-theme', themePref.value)
-  SetTheme(themePref.value) // 文件级持久化（config.json）
+
+function setAppearance(a: Appearance) {
+  if (a === themePref.value) return
+  themePref.value = a
+  localStorage.setItem('lh-theme', a)
+  SetThemeSettings(a, palettePref.value).catch(() => {}) // 文件级持久化（config.json）
   applyTheme()
 }
+
+function setPalette(p: PaletteId) {
+  if (p === palettePref.value) return
+  palettePref.value = p
+  localStorage.setItem('lh-palette', p)
+  SetThemeSettings(themePref.value, p).catch(() => {})
+  applyTheme()
+}
+
 function onSystemThemeChange() {
   if (themePref.value === 'auto') applyTheme()
 }
 
-// ---------- 头部菜单：检查更新 / 关于 ----------
+// ---------- 应用菜单：检查更新 / 关于（挂在指令条右侧） ----------
 const appVersion = ref('')
-const menuOpen = ref(false)
-const menuRoot = ref<HTMLElement | null>(null)
+const themePopRef = ref<InstanceType<typeof ThemePopover> | null>(null)
 const aboutOpen = ref(false)
 const aboutStartup = ref('') // 最近一次启动耗时埋点（关于弹窗展示）
 // 检查更新状态：null 未检查 | 'checking' | 结果（含自动更新资产）
@@ -97,7 +111,7 @@ function doCheckUpdate() {
 }
 
 // 自动更新三段式：确认 → 下载替换（进度）→ 就绪后由用户选立即/稍后重启
-function beginUpdate() { updFlow.value = 'confirm'; menuOpen.value = false }
+function beginUpdate() { updFlow.value = 'confirm'; themePopRef.value?.close() }
 function confirmUpdate() {
   updFlow.value = 'downloading'
   updProgress.value = null
@@ -142,6 +156,13 @@ const fileNameMap = computed(() => {
 
 const canQuery = computed(() => !loadingFiles.value && selected.value.size > 0)
 
+// 指挥轨收起状态（会话记忆）
+const railCollapsed = ref(localStorage.getItem('lh-rail') === '1')
+function toggleRail() {
+  railCollapsed.value = !railCollapsed.value
+  localStorage.setItem('lh-rail', railCollapsed.value ? '1' : '0')
+}
+
 // ---------- 事件 ----------
 function onFileProgress(p: any) {
   fileProg.value = { name: p.name, done: p.done, total: p.total, fileNo: p.fileNo ?? 0 }
@@ -164,20 +185,29 @@ onMounted(() => {
     if (paths && paths.length > 0) addFiles(paths)
   }, false)
   themeMedia.addEventListener('change', onSystemThemeChange)
-  // 菜单浮层：点外部关闭
-  document.addEventListener('click', onMenuOutside)
   refreshFiles()
-  // 版本号 + 主题持久化校正（config.json 权威；localStorage 先行防闪）
+  // 版本号 + 主题持久化校正（config.json 权威；localStorage 先行防闪）。
+  // 后端 openPath 已把旧顶层 theme 迁入 settings.theme，这里只做取值同步
   GetVersion().then(v => { appVersion.value = v }).catch(() => {})
   GetConfig().then(cfg => {
-    if (cfg.theme === 'auto' || cfg.theme === 'light' || cfg.theme === 'dark') {
-      if (cfg.theme !== themePref.value) {
-        themePref.value = cfg.theme
-        localStorage.setItem('lh-theme', cfg.theme)
-        applyTheme()
+    const t = (cfg as unknown as { settings?: { theme?: { appearance?: string; palette?: string } } })
+      .settings?.theme
+    const ap = t?.appearance
+    const pa = t?.palette
+    if (ap === 'auto' || ap === 'light' || ap === 'dark') {
+      if (ap !== themePref.value) {
+        themePref.value = ap
+        localStorage.setItem('lh-theme', ap)
       }
-    } else {
-      SetTheme(themePref.value) // 首次：localStorage 旧值迁移入库
+    }
+    if (pa && PALETTE_IDS.includes(pa as PaletteId) && pa !== palettePref.value) {
+      palettePref.value = pa as PaletteId
+      localStorage.setItem('lh-palette', pa)
+    }
+    applyTheme()
+    // 首次（或旧版无 settings）：把 localStorage 现值入库
+    if (ap !== 'auto' && ap !== 'light' && ap !== 'dark') {
+      SetThemeSettings(themePref.value, palettePref.value).catch(() => {})
     }
   }).catch(() => { /* 配置读取失败维持 localStorage 现值，不阻断 */ })
   // 启动收尾：界面就绪上报（后端显示窗口 + 写启动耗时埋点）、关于弹窗启动耗时
@@ -188,19 +218,6 @@ onUnmounted(() => {
   EventsOff('files:progress')
   EventsOff('query:progress')
   EventsOff('update:progress')
-  OnFileDropOff()
-  themeMedia.removeEventListener('change', onSystemThemeChange)
-  document.removeEventListener('click', onMenuOutside)
-})
-function onMenuOutside(e: MouseEvent) {
-  if (menuOpen.value && menuRoot.value && !menuRoot.value.contains(e.target as Node)) {
-    menuOpen.value = false
-    updateInfo.value = null
-  }
-}
-onUnmounted(() => {
-  EventsOff('files:progress')
-  EventsOff('query:progress')
   OnFileDropOff()
   themeMedia.removeEventListener('change', onSystemThemeChange)
 })
@@ -233,8 +250,14 @@ async function addFiles(paths: string[]) {
     fileProg.value = null
     fileTotal.value = 0
   }
-  // 首次加载：自动浏览全部，拖进来即见日志；追加文件不自动（不覆盖已输入条件的结果）
-  if (wasEmpty && files.value.length > 0) doQuery(new main.QuerySpecJSON())
+  // 首次加载：自动浏览全部，拖进来即见日志；
+  // 追加文件（新文件已自动勾选）：与勾选/删除同语义——已有结果即按最近条件自动重查，
+  // 不再要求手动点一次查询（扫描进行中不抢跑，防并发）
+  if (wasEmpty && files.value.length > 0) {
+    doQuery(new main.QuerySpecJSON())
+  } else if (stats.value && selected.value.size > 0 && !querying.value) {
+    queryBarRef.value?.rerunLast()
+  }
 }
 
 async function removeFile(id: number) {
@@ -265,10 +288,31 @@ async function clearAll() {
   queryBarRef.value?.reset() // 查询条件一并清空（历史保留）
 }
 
+// 全选/全不选：一次 Set 替换 + 单次重查（逐个 toggle 会触发 N 次查询）。
+// 恢复全选不设 stats 守卫（清空已把 stats 置空，再挡就永远查不了——与单勾选同语义）
+function toggleAllFiles(target: boolean) {
+  selected.value = target ? new Set(files.value.map(f => f.id)) : new Set()
+  if (target) {
+    if (!querying.value) queryBarRef.value?.rerunLast()
+  } else {
+    stats.value = null
+    ctxTarget.value = null
+  }
+}
+
 function toggleSelect(id: number) {
   const s = new Set(selected.value)
   if (s.has(id)) s.delete(id); else s.add(id)
   selected.value = s
+  // 勾选变化实时生效：勾选清零 → 结果清空（与移除全部文件同语义）；
+  // 有勾选（含从零恢复）→ 按最近条件自动重跑剩余勾选文件（无历史则按当前输入，
+  // 空条件即全览）；扫描进行中不抢跑（避免并发查询）
+  if (s.size === 0) {
+    stats.value = null
+    ctxTarget.value = null
+  } else if (!querying.value) {
+    queryBarRef.value?.rerunLast()
+  }
 }
 
 // ---------- 查询 ----------
@@ -307,7 +351,7 @@ async function runQuery(spec: main.QuerySpecJSON) {
   }
 }
 
-// 结果表级别统计点击 → 加该级别筛选并立即重查
+// 级别筛选入口（侧轨频谱面板 / 结果表级别统计统一走这里）：加该级别并立即重查
 function levelClick(lv: number) {
   queryBarRef.value?.addLevelAndSearch(lv)
 }
@@ -336,169 +380,145 @@ function openContext(fileId: number, offset: number) {
 
 <template>
   <div class="app">
-    <header class="brand">
-      <span class="name">LogHunter</span>
-      <span class="tag">本地日志排查 · 拖进来就查</span>
-      <div ref="menuRoot" class="brand-ctrl">
-        <button class="theme-btn" :title="THEME_TITLES[themePref]" @click="cycleTheme">{{ THEME_ICONS[themePref] }}</button>
-        <button class="theme-btn" title="菜单" @click.stop="menuOpen = !menuOpen; updateInfo = null">≡</button>
-        <div v-if="menuOpen" class="appmenu">
-          <button class="mi" @click="doCheckUpdate">⟳ 检查更新</button>
-          <button class="mi" @click="menuOpen = false; aboutOpen = true">ⓘ 关于</button>
-          <div v-if="updateInfo === 'checking'" class="upd-msg">正在检查…</div>
-          <template v-else-if="updInfo">
-            <template v-if="updInfo.err">
-              <div class="upd-msg">检查失败：{{ updInfo.err }}</div>
-            </template>
-            <template v-else-if="updInfo.hasUpdate">
-              <button v-if="updInfo.assetUrl" class="mi upd-cta" @click="beginUpdate">
-                ⬇ 自动更新到 v{{ updInfo.latest }}
-              </button>
-              <div class="upd-msg link" title="打开发布页手动下载" @click="openReleases">
-                发现新版本 v{{ updInfo.latest }}
-              </div>
-            </template>
-            <div v-else-if="updInfo.latest" class="upd-msg">
-              {{ appVersion.endsWith('-dev') ? `当前开发版，最新发布 v${updInfo.latest}` : `已是最新 v${updInfo.latest}` }}
-            </div>
-          </template>
-        </div>
-      </div>
-    </header>
-
-    <!-- 关于弹窗 -->
-    <div v-if="aboutOpen" class="about-mask" @click.self="aboutOpen = false">
-      <div class="about">
-        <img class="about-icon" :src="appicon" alt="LogHunter" />
-        <div class="about-name">LogHunter</div>
-        <div class="about-ver">v{{ appVersion }}</div>
-        <div class="about-desc">本地大日志快速排查 · 拖进来就查</div>
-        <div class="about-link" title="打开仓库页" @click="openRepo">github.com/macaoyxx/log-hunter</div>
-        <div v-if="aboutStartup" class="about-startup" title="启动耗时埋点（data/startup.log）">{{ aboutStartup }}</div>
-        <button class="ghost" @click="aboutOpen = false">关闭</button>
-      </div>
-    </div>
-
-    <!-- 自动更新浮层：确认 / 下载中 / 就绪 / 失败 -->
-    <div v-if="updFlow" class="upd-mask" @click.self="closeUpdFlow">
-      <div class="upd-dlg">
-        <template v-if="updFlow === 'confirm'">
-          <div class="upd-title">下载并更新到 v{{ updInfo?.latest }}？</div>
-          <div class="upd-desc">
-            约 {{ fmtMB(updInfo?.assetSize ?? 0) }} · 下载并校验后自动替换本程序，完成后可立即或稍后重启
-          </div>
-          <div class="upd-btns">
-            <button class="ghost" @click="closeUpdFlow">取消</button>
-            <button class="primary" @click="confirmUpdate">下载并更新</button>
-          </div>
-        </template>
-        <template v-else-if="updFlow === 'downloading'">
-          <div class="upd-title">正在下载 v{{ updInfo?.latest }}…</div>
-          <div class="dl-bar"><div class="dl-fill" :style="{ width: updPct + '%' }"></div></div>
-          <div class="upd-desc">
-            {{ fmtMB(updProgress?.received ?? 0) }}
-            <template v-if="updProgress && updProgress.total > 0">/ {{ fmtMB(updProgress.total) }} · {{ updPct }}%</template>
-          </div>
-        </template>
-        <template v-else-if="updFlow === 'ready'">
-          <div class="upd-title">✓ 更新已就绪</div>
-          <div class="upd-desc">新版本已替换完成，重启后生效</div>
-          <div class="upd-btns">
-            <button class="ghost" @click="closeUpdFlow">稍后手动重启</button>
-            <button class="primary" @click="restartNow">立即重启</button>
-          </div>
-        </template>
-        <template v-else-if="updFlow === 'error'">
-          <div class="upd-title">更新失败</div>
-          <div class="upd-desc err">{{ updError }}</div>
-          <div class="upd-btns">
-            <button class="ghost" @click="openReleases">手动下载</button>
-            <button class="primary" @click="closeUpdFlow">关闭</button>
-          </div>
-        </template>
-      </div>
-    </div>
-
-    <FileBar
+    <SideRail
       :files="files" :selected="selected" :loading="loadingFiles" :progress="fileProg" :file-total="fileTotal"
+      :stats="stats" :querying="querying" :query-progress="queryProg" :collapsed="railCollapsed" :version="appVersion"
       @add="addFiles" @remove="removeFile" @clear="clearAll" @toggle="toggleSelect"
+      @toggle-all="toggleAllFiles" @toggle-rail="toggleRail" @level-filter="levelClick"
     />
-    <div v-if="fileNotice" class="notice-bar">
-      <pre class="notice-text">{{ fileNotice }}</pre>
-      <button class="notice-x" title="关闭提示" @click="fileNotice = ''">✕</button>
+    <div class="main">
+      <QueryBar
+        ref="queryBarRef"
+        :disabled="!canQuery" :querying="querying" :progress="queryProg" :error="queryError"
+        :files="files" :selected="selected"
+        @search="doQuery" @cancel="Cancel"
+      >
+        <template #actions>
+          <div class="actions">
+            <ThemePopover ref="themePopRef" :appearance="themePref" :palette="palettePref"
+              @set-appearance="setAppearance" @set-palette="setPalette">
+              <template #menu>
+                <button class="mi" @click="doCheckUpdate"><AppIcon name="refresh-cw" :size="12" />检查更新</button>
+                <button class="mi" @click="themePopRef?.close(); aboutOpen = true"><AppIcon name="info" :size="12" />关于 LogHunter</button>
+                <div v-if="updateInfo === 'checking'" class="upd-msg">正在检查…</div>
+                <template v-else-if="updInfo">
+                  <template v-if="updInfo.err">
+                    <div class="upd-msg">检查失败：{{ updInfo.err }}</div>
+                  </template>
+                  <template v-else-if="updInfo.hasUpdate">
+                    <button v-if="updInfo.assetUrl" class="mi upd-cta" @click="beginUpdate">
+                      <AppIcon name="download" :size="12" />自动更新到 v{{ updInfo.latest }}
+                    </button>
+                    <div class="upd-msg link" title="打开发布页手动下载" @click="openReleases">
+                      发现新版本 v{{ updInfo.latest }}
+                    </div>
+                  </template>
+                  <div v-else-if="updInfo.latest" class="upd-msg">
+                    {{ appVersion.endsWith('-dev') ? `当前开发版，最新发布 v${updInfo.latest}` : `已是最新 v${updInfo.latest}` }}
+                  </div>
+                </template>
+              </template>
+            </ThemePopover>
+          </div>
+        </template>
+      </QueryBar>
+      <div v-if="fileNotice" class="notice-bar">
+        <pre class="notice-text">{{ fileNotice }}</pre>
+        <button class="notice-x" title="关闭提示" @click="fileNotice = ''"><AppIcon name="x" :size="11" /></button>
+      </div>
+      <ResultTable
+        :stats="stats" :querying="querying" :progress="queryProg"
+        :file-count="files.length" :file-names="fileNameMap"
+        :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"
+        :merged="mergedMode" :merging="merging" :no-time-names="noTimeNames"
+        @open-context="openContext" @level-click="levelClick" @toggle-merged="setMerged"
+      />
+      <ContextPanel v-if="ctxTarget" :target="ctxTarget" :file-name="fileNameMap.get(ctxTarget.fileId)!"
+        :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"
+        @close="ctxTarget = null"
+        @jump="(off: number) => { if (ctxTarget) ctxTarget = { fileId: ctxTarget.fileId, offset: off } }" />
     </div>
-    <QueryBar
-      ref="queryBarRef"
-      :disabled="!canQuery" :querying="querying" :progress="queryProg" :error="queryError"
-      :files="files" :selected="selected"
-      @search="doQuery" @cancel="Cancel"
-    />
-    <ResultTable
-      :stats="stats" :querying="querying" :progress="queryProg"
-      :file-count="files.length" :file-names="fileNameMap"
-      :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"
-      :merged="mergedMode" :merging="merging" :no-time-names="noTimeNames"
-      @open-context="openContext" @level-click="levelClick" @toggle-merged="setMerged"
-    />
-    <ContextPanel v-if="ctxTarget" :target="ctxTarget" :file-name="fileNameMap.get(ctxTarget.fileId)!"
-      :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"
-      @close="ctxTarget = null"
-      @jump="(off: number) => { if (ctxTarget) ctxTarget = { fileId: ctxTarget.fileId, offset: off } }" />
+  </div>
+
+  <!-- 关于弹窗 -->
+  <div v-if="aboutOpen" class="about-mask" @click.self="aboutOpen = false">
+    <div class="about">
+      <img class="about-icon" :src="appicon" alt="LogHunter" />
+      <div class="about-name">LogHunter</div>
+      <div class="about-ver">v{{ appVersion }}</div>
+      <div class="about-desc">本地大日志快速排查 · 拖进来就查</div>
+      <div class="about-link" title="打开仓库页" @click="openRepo">github.com/macaoyxx/log-hunter</div>
+      <div v-if="aboutStartup" class="about-startup" title="启动耗时埋点（data/startup.log）">{{ aboutStartup }}</div>
+      <button class="ghost" @click="aboutOpen = false">关闭</button>
+    </div>
+  </div>
+
+  <!-- 自动更新浮层：确认 / 下载中 / 就绪 / 失败 -->
+  <div v-if="updFlow" class="upd-mask" @click.self="closeUpdFlow">
+    <div class="upd-dlg">
+      <template v-if="updFlow === 'confirm'">
+        <div class="upd-title">下载并更新到 v{{ updInfo?.latest }}？</div>
+        <div class="upd-desc">
+          约 {{ fmtMB(updInfo?.assetSize ?? 0) }} · 下载并校验后自动替换本程序，完成后可立即或稍后重启
+        </div>
+        <div class="upd-btns">
+          <button class="ghost" @click="closeUpdFlow">取消</button>
+          <button class="primary" @click="confirmUpdate">下载并更新</button>
+        </div>
+      </template>
+      <template v-else-if="updFlow === 'downloading'">
+        <div class="upd-title">正在下载 v{{ updInfo?.latest }}…</div>
+        <div class="dl-bar"><div class="dl-fill" :style="{ width: updPct + '%' }"></div></div>
+        <div class="upd-desc">
+          {{ fmtMB(updProgress?.received ?? 0) }}
+          <template v-if="updProgress && updProgress.total > 0">/ {{ fmtMB(updProgress.total) }} · {{ updPct }}%</template>
+        </div>
+      </template>
+      <template v-else-if="updFlow === 'ready'">
+        <div class="upd-title">更新已就绪</div>
+        <div class="upd-desc">新版本已替换完成，重启后生效</div>
+        <div class="upd-btns">
+          <button class="ghost" @click="closeUpdFlow">稍后手动重启</button>
+          <button class="primary" @click="restartNow">立即重启</button>
+        </div>
+      </template>
+      <template v-else-if="updFlow === 'error'">
+        <div class="upd-title">更新失败</div>
+        <div class="upd-desc err">{{ updError }}</div>
+        <div class="upd-btns">
+          <button class="ghost" @click="openReleases">手动下载</button>
+          <button class="primary" @click="closeUpdFlow">关闭</button>
+        </div>
+      </template>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* 指挥舱骨架：左侧指挥轨 + 右侧主区（指令条 → 提示条 → 结果表） */
 .app {
   display: flex;
-  flex-direction: column;
   height: 100%;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 0;
 }
-.brand {
-  flex: none;
+.main {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
   gap: 8px;
-  user-select: none;
+  padding: 10px 12px 12px;
 }
-.name {
-  font-family: var(--mono);
-  font-weight: 700;
-  font-size: 16px;
-  letter-spacing: .04em;
-}
-.tag { color: var(--text-faint); font-size: 12px; }
-.brand-ctrl {
-  margin-left: auto;
+
+/* 指令条右侧动作区（主题设置 + 应用菜单） */
+.actions {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 2px;
-  position: relative;
+  flex: none;
 }
-.theme-btn {
-  background: transparent;
-  border: none;
-  font-size: 15px;
-  line-height: 1;
-  padding: 4px 6px;
-}
-.theme-btn:hover { background: var(--bg-hover); border: none; }
-.appmenu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 150;
-  min-width: 210px;
-  padding: 5px;
-  background: var(--bg-float);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-pop);
-  font-size: 12px;
-  color: var(--text);
-  user-select: none;
-}
+/* 设置弹层内的菜单项（检查更新/关于/更新 CTA） */
 .mi {
   display: flex;
   align-items: center;
@@ -514,18 +534,16 @@ function openContext(fileId: number, offset: number) {
   text-align: left;
   cursor: pointer;
 }
-.mi:hover { background: var(--bg-float-hover); }
+.mi:hover { background: var(--bg-hover); border: none; }
 .upd-msg {
   padding: 6px 10px 4px;
   color: var(--text-dim);
   font-size: 11.5px;
-  border-top: 1px solid var(--border);
-  margin-top: 4px;
   white-space: pre-wrap;
 }
-.upd-msg.link { color: var(--amber); cursor: pointer; }
+.upd-msg.link { color: var(--accent-strong); cursor: pointer; }
 
-/* 自动更新浮层（复用关于弹窗的浮层层级与表面 token） */
+/* 自动更新浮层 */
 .upd-mask {
   position: fixed;
   inset: 0;
@@ -541,18 +559,18 @@ function openContext(fileId: number, offset: number) {
   background: var(--bg-float);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-pop);
+  box-shadow: var(--shadow-pop), var(--sheen-light);
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
-.upd-title { font-weight: 700; font-size: 14px; }
+.upd-title { font-weight: 600; font-size: 14px; }
 .upd-desc { color: var(--text-dim); font-size: 12px; word-break: break-all; }
-.upd-desc.err { color: var(--lvl-3-fg); }
+.upd-desc.err { color: var(--danger); }
 .upd-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .dl-bar { height: 6px; border-radius: 3px; background: var(--bg-elev); overflow: hidden; }
-.dl-fill { height: 100%; background: var(--amber); transition: width .15s; }
-.upd-cta { color: var(--amber); font-weight: 600; }
+.dl-fill { height: 100%; background: var(--accent-strong); transition: width .15s; }
+.upd-cta { color: var(--accent-strong); font-weight: 600; }
 .about-startup { color: var(--text-faint); font-size: 11px; font-family: var(--mono); }
 
 /* 关于弹窗 */
@@ -571,7 +589,7 @@ function openContext(fileId: number, offset: number) {
   background: var(--bg-float);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-pop);
+  box-shadow: var(--shadow-pop), var(--sheen-light);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -580,7 +598,7 @@ function openContext(fileId: number, offset: number) {
 }
 .about-icon { width: 52px; height: 52px; border-radius: 12px; }
 .about-name { font-family: var(--mono); font-weight: 700; font-size: 17px; }
-.about-ver { color: var(--amber); font-family: var(--mono); font-size: 12.5px; }
+.about-ver { color: var(--accent-strong); font-family: var(--mono); font-size: 12.5px; }
 .about-desc { color: var(--text-dim); font-size: 12px; }
 .about-link {
   color: var(--text-dim);
@@ -590,17 +608,18 @@ function openContext(fileId: number, offset: number) {
   padding: 2px 4px;
   border-radius: 4px;
 }
-.about-link:hover { color: var(--amber); background: var(--bg-hover); }
+.about-link:hover { color: var(--accent-strong); background: var(--bg-hover); }
 .about button { margin-top: 12px; }
+
 .notice-bar {
   flex: none;
   display: flex;
   align-items: flex-start;
   gap: 8px;
   padding: 7px 12px;
-  background: var(--amber-soft);
-  border: 1px solid var(--amber-line);
-  border-radius: var(--radius);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
 }
 .notice-text {
   flex: 1;
@@ -617,9 +636,8 @@ function openContext(fileId: number, offset: number) {
   background: none;
   border: none;
   color: var(--text-faint);
-  font-size: 11px;
   cursor: pointer;
   padding: 2px;
 }
-.notice-x:hover { color: var(--text); }
+.notice-x:hover { color: var(--text); border: none; }
 </style>

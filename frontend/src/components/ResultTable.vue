@@ -4,6 +4,7 @@ import { GetResults, ExportResults, SaveFileDialog, CopyLineText, CopyText, Canc
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import { logscan } from '../../wailsjs/go/models'
 import HighlightText from './HighlightText.vue'
+import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{
   stats: logscan.QueryStats | null
@@ -33,9 +34,12 @@ const SEG_ROWS = Math.floor(MAX_CANVAS_H / ROW_H) - 1000 // 每段行数（约 9
 // 看全文走双击行的上下文面板（其内单行同样有 64KB 防御截断）
 const MAX_CANVAS_W = 200_000
 
-// 列宽（表头与行共用）
-const W_FILE = 200, W_LINE = 86, W_TS = 122, W_LVL = 64, PAD = 20
-const FIXED_W = W_FILE + W_LINE + W_TS + W_LVL + PAD
+// 列宽（表头与行共用）。文件列动态：按会话文件名集合 hug 内容（中略后最长文本
+// 估宽，mono 11px ≈ 6.7px/字符 + 圆点与间距余量），clamp [64,240] 防极端；
+// .c-file 必须带 min-width:0——flex 子项默认 min-width:auto 会用整段 nowrap
+// 文本把 width 顶开，ellipsis 失效、列后拖出大段空白（实测踩坑）
+const W_FILE = 200, W_LINE = 64, W_TS = 122, W_LVL = 64, PAD = 20
+const FIXED_W = W_LINE + W_TS + W_LVL + PAD
 
 const viewport = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
@@ -103,9 +107,12 @@ async function copySelText() {
     closeRowMenu()
   }
 }
+// 导出下拉（单按钮合并入口）
+const expOpen = ref(false)
 if (typeof document !== 'undefined') {
   document.addEventListener('mousedown', (e: MouseEvent) => {
     if (rowMenu.value && !(e.target as HTMLElement)?.closest?.('.row-menu')) closeRowMenu()
+    if (expOpen.value && !(e.target as HTMLElement)?.closest?.('.exp-wrap')) expOpen.value = false
   })
 }
 function onKeydownEsc(e: KeyboardEvent) {
@@ -114,12 +121,39 @@ function onKeydownEsc(e: KeyboardEvent) {
 
 const total = computed(() => props.stats?.total ?? 0)
 
-// 画布宽度：固定列 + 最长行估算（每 rune 按 12px 上界，绝不裁剪内容；短行不撑宽），
-// 封顶 MAX_CANVAS_W（见其注释——超长行撑出的超大层会拖死渲染）
-const canvasW = computed(() => {
-  const maxLen = props.stats?.maxLineLen ?? 0
-  return Math.max(viewW.value, Math.min(FIXED_W + maxLen * 12, MAX_CANVAS_W))
+// 文件列固定宽（120px ≈ mono 11px 下 16 字符 + 圆点与间距）：超长文件名中略保留首尾。
+// .c-file 必须 min-width:0——flex 子项默认 min-width:auto 会用整段 nowrap 文本把
+// width 顶开、ellipsis 失效（实测踩坑），这才是此前「列宽不生效」的根因
+const FILE_COL_W = 160
+const FILE_TRUNC = 19 // 中略尾部保留 9 字符：轮转名尾缀（如 02.4.log）完整可读
+
+// 画布宽度：按「当前渲染窗口」实测（可伸可缩）——等价于表格按内容自动撑开。
+// 不用 stats.maxLineLen 预估（真实日志常有个别 100KB+ 离群长行，按文件级最大行长
+// 预支画布会得到几十万 px 空白滚动区）；也不用单调递增（宽行滚过后画布永久停在
+// 高位，日常区滚动条再也回不来——实测踩坑）。改为随当前渲染的最宽行实时伸缩：
+// 长行滚入视口画布长大，滚出渲染窗口即缩回，滚动条始终反映眼前内容；
+// MAX_CANVAS_W 封顶截断语义不变（超长行全文走详情面板）
+const seenMaxPx = ref(0) // 当前渲染窗口内最宽内容行（内容区 px；重查询/切视图时重置）
+const canvasW = computed(() =>
+  Math.max(viewW.value, Math.min(FIXED_W + FILE_COL_W + seenMaxPx.value + 64, MAX_CANVAS_W)))
+// 画布收缩时滚动位置可能越界，主动钳回最右可滚处（浏览器虽会 clamp，主动做防跳变）
+watch(canvasW, () => {
+  const el = viewport.value
+  if (!el) return
+  const maxScroll = Math.max(0, canvasW.value - el.clientWidth)
+  if (el.scrollLeft > maxScroll) el.scrollLeft = maxScroll
 })
+// 批次渲染后测量：当前渲染窗口最宽行（直接赋值，允许宽行滚出后缩回）
+function measureRenderedRows() {
+  const el = viewport.value
+  if (!el) return
+  let widest = 0
+  el.querySelectorAll<HTMLElement>('.c-text').forEach(n => {
+    const w = n.offsetWidth
+    if (w > widest) widest = w
+  })
+  seenMaxPx.value = widest
+}
 
 // ---- 分段 ----
 const segEnd = computed(() => Math.min(segStart.value + SEG_ROWS, total.value))
@@ -178,6 +212,7 @@ async function loadVisible() {
           const m = rowsCache.value
           rows.forEach((r, k) => m.set(s + k, r))
           rowsCache.value = new Map(m)
+          nextTick(measureRenderedRows) // 渲染后精化画布宽
         }
       } catch { /* 单次拉取失败不阻断 */ }
     }
@@ -190,6 +225,7 @@ async function resetView(pull: boolean) {
   fetchSeq++
   selIdx.value = -1
   segStart.value = 0
+  seenMaxPx.value = 0 // 画布实测宽度重置，随渲染重新长大
   viewport.value?.scrollTo({ top: 0, left: 0 })
   scrollTop.value = 0
   if (!pull) return
@@ -229,7 +265,18 @@ function onScroll() {
 }
 
 // ---- 行交互 ----
+// 单击只选中（配 ↑↓/Enter 与跳转），双击行才打开上下文面板（设计定稿交互）
 function clickRow(i: number) { selIdx.value = i }
+// 文件名中段省略：保留首尾（超长轮转名一眼认出头尾）
+function midTrunc(s: string, max: number): string {
+  if (s.length <= max) return s
+  const h = Math.ceil((max - 1) / 2), t = max - 1 - h
+  return s.slice(0, h) + '…' + s.slice(s.length - t)
+}
+// 文件身份色（与指挥轨一致：按拖入序循环三色）
+function fileDot(id: number): string {
+  return `var(--file-${id % 3})`
+}
 // 选中行变化时跳转框数值跟随（键盘 ↑↓ / 点击行 / 跳转按钮都统一）
 watch(selIdx, i => { if (i >= 0) jumpTo.value = String(i + 1) })
 function openRow(i: number) {
@@ -387,14 +434,30 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
         </span>
         <button class="ghost" :disabled="selIdx < 0 || selIdx >= total - 1" @click="nextRow" title="下一条（↓）">下一条 ▶</button>
       </span>
-      <button @click="doExport('txt')">导出 TXT</button>
-      <button @click="doExport('csv')">导出 CSV</button>
+      <div class="exp-wrap">
+        <button :class="{ open: expOpen }" title="导出查询结果" @click="expOpen = !expOpen">
+          <AppIcon name="download" :size="12" />导出
+        </button>
+        <div v-if="expOpen" class="exp-pop">
+          <button class="pk" @click="expOpen = false; doExport('txt')">导出 TXT</button>
+          <button class="pk" @click="expOpen = false; doExport('csv')">导出 CSV</button>
+        </div>
+      </div>
     </div>
     <div v-else class="statusbar">
       <span class="dim">{{ querying ? '正在扫描…' : '等待查询' }}</span>
     </div>
 
-    <div v-if="total === 0" class="viewport-empty">{{ emptyHint }}</div>
+    <div v-if="total === 0" class="viewport-empty">
+      <template v-if="querying">
+        <!-- 扫描中骨架屏：行陆续落格的预期感 -->
+        <div class="skel"><i style="width:32%"></i><i style="width:50%"></i><i style="width:16%"></i><i style="width:12%"></i><i style="width:86%"></i></div>
+        <div class="skel"><i style="width:24%"></i><i style="width:36%"></i><i style="width:16%"></i><i style="width:12%"></i><i style="width:92%"></i></div>
+        <div class="skel"><i style="width:38%"></i><i style="width:44%"></i><i style="width:16%"></i><i style="width:12%"></i><i style="width:70%"></i></div>
+        <div class="skel-note">正在扫描 · 已找到 {{ (progress?.matched ?? 0).toLocaleString() }} 条</div>
+      </template>
+      <template v-else>{{ emptyHint }}</template>
+    </div>
     <div v-else class="tablearea">
       <!-- 表头固定在滚动容器外（不依赖 sticky），横向随滚动位移同步 -->
       <div class="head-outer">
@@ -403,20 +466,21 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
           <span class="h-line">行号</span>
           <span class="h-ts">时间</span>
           <span class="h-lvl">级别</span>
-          <span class="h-text">内容（左右滚动查看全文，双击行看上下文）</span>
+          <span class="h-text">内容（左右滚动看全文 · 双击行看上下文）</span>
         </div>
       </div>
       <div class="viewport" ref="viewport" tabindex="0" @scroll.passive="onScroll" @keydown="onKeydown">
         <div class="canvas" :style="{ height: segCanvasH + 'px', width: canvasW + 'px' }">
           <!-- key 含视图模式与查询代次：切换重排后容器重建，播放一次淡入过渡 -->
           <div class="rows" :key="(merged ? 'm' : 'f') + '-' + (stats?.total ?? 0)">
-            <div v-for="(vr, slot) in visibleRows" :key="slot" class="row" :class="{ sel: vr.gi === selIdx }"
+            <div v-for="(vr, slot) in visibleRows" :key="slot" class="row"
+              :class="{ sel: vr.gi === selIdx, 'is-err': vr.row?.level === 4, 'is-fatal': vr.row?.level === 5 }"
               :style="{ top: ((vr.gi - segStart) * ROW_H) + 'px' }"
               @click="clickRow(vr.gi)" @dblclick="openRow(vr.gi)" @contextmenu="openRowMenu($event, vr.gi)">
               <span class="c-file" :title="fileNames.get(vr.row?.fileId ?? -1) ?? ''">
-                {{ fileNames.get(vr.row?.fileId ?? -1) ?? '' }}
+                <i class="fdot" :style="{ background: fileDot(vr.row?.fileId ?? -1) }"></i>{{ midTrunc(fileNames.get(vr.row?.fileId ?? -1) ?? '', FILE_TRUNC) }}
               </span>
-              <span class="c-line">{{ vr.row?.lineNo ?? '' }}</span>
+              <span class="c-line" :title="String(vr.row?.lineNo ?? '')">{{ vr.row?.lineNo ?? '' }}</span>
               <span class="c-ts">{{ vr.row ? fmtTs(vr.row.ts) : '' }}</span>
               <span class="c-lvl">
                 <i v-if="vr.row && vr.row.level >= 0" class="lvl" :class="'lvl-' + vr.row.level">
@@ -430,10 +494,14 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
               </span>
             </div>
           </div>
-          <button v-if="hasNextSeg" class="seg-tip" :style="{ top: (segCanvasH - 44) + 'px' }" @click="gotoSeg(segEnd)">
-            已到本段末尾（第 {{ segEnd.toLocaleString() }} 条）· 点击继续显示后面的结果 ▶
+          <button v-if="hasNextSeg" class="seg-tip"
+            :style="{ top: (segCanvasH - 56) + 'px', left: (scrollLeft + viewW / 2) + 'px' }"
+            @click="gotoSeg(segEnd)">
+            已显示前 {{ segEnd.toLocaleString() }} / {{ total.toLocaleString() }} 条 · 点击继续加载 ▶
           </button>
-          <button v-else-if="hasPrevSeg" class="seg-tip" :style="{ top: (segCanvasH - 44) + 'px' }" @click="gotoSeg(0)">
+          <button v-else-if="hasPrevSeg" class="seg-tip"
+            :style="{ top: (segCanvasH - 56) + 'px', left: (scrollLeft + viewW / 2) + 'px' }"
+            @click="gotoSeg(0)">
             ↩ 回到开头
           </button>
         </div>
@@ -503,7 +571,7 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   font-size: 12.5px;
   flex-wrap: wrap;
 }
-.hit b { color: var(--amber); font-size: 14px; font-family: var(--mono); }
+.hit b { color: var(--accent-strong); font-size: 14px; font-family: var(--mono); }
 .cost { color: var(--text-dim); font-family: var(--mono); margin-left: 4px; font-size: 11.5px; }
 .trunc { color: var(--lvl-3-fg); }
 .notime { color: var(--text-dim); font-size: 11.5px; }
@@ -523,7 +591,7 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   cursor: pointer;
 }
 .viewswitch button:hover:not(.on):not(:disabled) { background: var(--bg-hover); }
-.viewswitch button.on { background: var(--amber); color: var(--amber-ink); font-weight: 700; }
+.viewswitch button.on { background: var(--accent-strong); color: var(--accent-ink); font-weight: 700; }
 .viewswitch button:disabled { opacity: .5; cursor: default; }
 .spacer { flex: 1; }
 .dim { color: var(--text-dim); }
@@ -537,14 +605,55 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
 .lvlbtn-4 { color: var(--lvl-4-fg); } .lvlbtn-4:hover { background: var(--lvl-4-bg); }
 .lvlbtn-5 { color: var(--lvl-5-fg); } .lvlbtn-5:hover { background: var(--lvl-5-bg); }
 .nav { display: flex; align-items: center; gap: 6px; }
-.jump { color: var(--text-dim); display: flex; align-items: center; gap: 4px; font-size: 11.5px; }
-.jump input { width: 90px; padding: 3px 6px; font-family: var(--mono); }
+/* 导出下拉（浮层表面层级） */
+.exp-wrap { position: relative; flex: none; }
+.exp-wrap > button.open { color: var(--accent-strong); border-color: var(--accent-line); }
+.exp-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 80;
+  min-width: 128px; padding: 5px;
+  background: var(--bg-float); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-pop), var(--sheen-light);
+}
+.exp-pop .pk {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; border-radius: 5px;
+  padding: 6px 10px; font-size: 12px; color: var(--text); cursor: pointer;
+}
+.exp-pop .pk:hover { background: var(--bg-float-hover); border: none; }
+.jump { color: var(--text-dim); display: flex; align-items: center; gap: 4px; font-size: 11.5px; white-space: nowrap; }
+.jump input { width: 96px; padding: 3px 6px; font-family: var(--mono); }
 
 .viewport-empty {
   flex: 1;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--text-dim); font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 20px 40px;
 }
+/* 扫描中骨架屏：预示行将陆续落格 */
+.skel {
+  display: grid;
+  grid-template-columns: 150px 90px 180px 70px 1fr;
+  gap: 12px;
+  width: 100%;
+  max-width: 860px;
+  height: 26px;
+  align-items: center;
+}
+.skel i {
+  height: 11px;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--bg-elev) 30%, var(--bg-hover) 50%, var(--bg-elev) 70%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.3s linear infinite;
+}
+.skel-note { font-size: 11.5px; color: var(--text-faint); margin-top: 8px; font-family: var(--mono); }
+@keyframes skel-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skel i { animation: none; } }
 .tablearea {
   flex: 1; min-height: 0;
   display: flex; flex-direction: column;
@@ -565,8 +674,8 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   user-select: none;
   will-change: transform;
 }
-.h-file { width: 140px; flex: none; }
-.h-line { width: 86px; flex: none; text-align: right; }
+.h-file { width: 160px; flex: none; min-width: 0; overflow: hidden; }
+.h-line { width: 64px; flex: none; text-align: left; }
 .h-ts { width: 180px; flex: none; padding-left: 12px; }
 .h-lvl { width: 64px; flex: none; }
 .h-text { flex: none; color: var(--text-faint); font-weight: 400; font-size: 11px; }
@@ -584,7 +693,7 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   .rows { animation: none; }
 }
 .merging-tip {
-  color: var(--amber);
+  color: var(--accent-strong);
   font-size: 11.5px;
   animation: merging-pulse 1s ease-in-out infinite;
 }
@@ -607,19 +716,34 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   contain: layout style; /* 渲染边界隔离：行内容变化不外溢引发容器级重排 */
 }
 .row:hover { background: var(--bg-hover); }
+/* ERROR/FATAL 左缘信号条（选中态样式在其后，覆盖优先） */
+.row.is-err { box-shadow: inset 2px 0 0 var(--lvl-4-fg); }
+.row.is-fatal {
+  box-shadow: inset 2px 0 0 var(--lvl-5-fg);
+  background: color-mix(in srgb, var(--lvl-5-fg) 4%, transparent);
+}
 .row.sel {
-  background: var(--amber-active);
-  box-shadow: inset 4px 0 0 var(--amber);
-  outline: 1px solid var(--amber-line);
+  background: var(--accent-active);
+  box-shadow: inset 4px 0 0 var(--accent-strong);
+  outline: 1px solid var(--accent-line);
   outline-offset: -1px;
 }
-.row.sel .c-line { color: var(--amber); font-weight: 700; }
-.row.sel .c-file { color: var(--amber); }
+.row.sel .c-line { color: var(--accent-strong); font-weight: 700; }
+.row.sel .c-file { color: var(--accent-strong); }
 .c-file {
-  width: 140px; flex: none; color: var(--text-dim);
+  width: 160px; flex: none; min-width: 0; color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 6px;
+  padding-right: 16px; /* 与行号列的固定列间距（拉开 .log 与行号，避免读成 log1） */
+  white-space: nowrap;
 }
-.c-line { width: 86px; flex: none; color: var(--text-faint); text-align: right; }
+.c-file .fdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+/* 行号：定宽左对齐，超长（亿行级大文件）省略、悬停 title 看全；
+   min-width:0 防 flex 撑乱（同 c-file 的坑） */
+.c-line {
+  width: 64px; flex: none; min-width: 0; color: var(--text-faint);
+  text-align: left; overflow: hidden; text-overflow: ellipsis;
+}
 .c-ts { width: 180px; flex: none; color: var(--text-dim); font-size: 11.5px; padding-left: 12px; }
 .c-lvl { width: 64px; flex: none; }
 .c-text {
@@ -628,16 +752,19 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   color: var(--text);
 }
 
+/* 分段续载按钮：悬浮于可视区中央——left 由模板按 scrollLeft+视口宽/2 动态注入，
+   横向滚多远都始终可见可点（按画布 50% 定位会随滚动跑出视口，实测踩坑） */
 .seg-tip {
-  position: absolute; left: 50%; transform: translateX(-50%);
-  color: var(--amber); font-size: 12.5px;
+  position: absolute; transform: translateX(-50%);
+  color: var(--accent-strong); font-size: 12.5px;
   padding: 8px 22px;
   background: var(--bg-elev);
-  border: 1px solid var(--amber-line);
+  border: 1px solid var(--accent-line);
   border-radius: 18px;
   cursor: pointer;
+  box-shadow: var(--shadow-pop);
 }
-.seg-tip:hover { background: var(--amber); color: var(--amber-ink); }
+.seg-tip:hover { background: var(--accent-strong); color: var(--accent-ink); }
 
 /* 右键「复制整行」菜单（浮层表面层级） */
 .row-menu {
@@ -663,7 +790,7 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   cursor: pointer;
 }
 .row-menu-item:hover { background: var(--bg-float-hover); }
-.row-menu-item.copied { color: var(--amber); font-weight: 600; }
+.row-menu-item.copied { color: var(--accent-strong); font-weight: 600; }
 
 /* 导出模态框：复用 about/update 弹框模式（遮罩 + 浮层卡片），遮罩阻塞其他操作 */
 .export-mask {
@@ -682,7 +809,7 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
 }
 .export-title { font-weight: 700; font-size: 14px; }
 .export-bar { height: 8px; background: var(--bg-elev); border-radius: 4px; overflow: hidden; }
-.export-fill { height: 100%; background: var(--amber); transition: width .15s; }
+.export-fill { height: 100%; background: var(--accent-strong); transition: width .15s; }
 .export-count { color: var(--text-dim); font-size: 12px; font-family: var(--mono); }
 .export-result { font-size: 13px; font-weight: 600; }
 .export-result.ok { color: var(--ok); }

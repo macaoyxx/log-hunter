@@ -62,6 +62,10 @@ export function ListFiles() {
   return window['go']['main']['App']['ListFiles']();
 }
 
+export function MemUsage() {
+  return window['go']['main']['App']['MemUsage']();
+}
+
 export function PickFiles() {
   return window['go']['main']['App']['PickFiles']();
 }
@@ -94,8 +98,8 @@ export function SetMerged(arg1) {
   return window['go']['main']['App']['SetMerged'](arg1);
 }
 
-export function SetTheme(arg1) {
-  return window['go']['main']['App']['SetTheme'](arg1);
+export function SetThemeSettings(arg1, arg2) {
+  return window['go']['main']['App']['SetThemeSettings'](arg1, arg2);
 }
 
 export function StartUpdate() {

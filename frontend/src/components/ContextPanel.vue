@@ -4,6 +4,7 @@ import { GetContext, CopyText, CopyLineText } from '../../wailsjs/go/main/App'
 import { logscan } from '../../wailsjs/go/models'
 import HighlightText from './HighlightText.vue'
 import ContextMenu from './ContextMenu.vue'
+import AppIcon from './AppIcon.vue'
 import { SLOT_NAMES } from '../constants'
 
 const props = defineProps<{
@@ -144,18 +145,17 @@ function clearAllMarks() {
   <div class="panel" :class="{ maximized }">
     <div class="head">
       <div class="title">
-        <span class="t-icon">🔎</span>
         <span class="t-name">{{ fileName }}</span>
         <span class="t-sub">这一行前后发生了什么</span>
       </div>
       <div class="ctrl">
         <label>前 <input type="number" min="0" max="500" v-model.number="before" @change="load" class="num" /> 行</label>
         <label>后 <input type="number" min="0" max="500" v-model.number="after" @change="load" class="num" /> 行</label>
-        <button class="ghost" @click="copyAll" title="复制当前显示的全部上下文行（含前后）">⧉ 全部</button>
+        <button class="ghost" @click="copyAll" title="复制当前显示的全部上下文行（含前后）"><AppIcon name="copy" :size="12" /> 全部</button>
         <span v-if="copied" class="copied-tip">{{ copied }}</span>
-        <button class="ghost" @click="load" :disabled="loading" title="重新读取">⟳</button>
-        <button class="ghost" @click="maximized = !maximized" :title="maximized ? '还原窗口' : '放大铺满'">{{ maximized ? '⤢' : '⛶' }}</button>
-        <button class="ghost" @click="emit('close')" title="关闭">✕</button>
+        <button class="ghost" @click="load" :disabled="loading" title="重新读取"><AppIcon name="rotate-ccw" :size="13" /></button>
+        <button class="ghost" @click="maximized = !maximized" :title="maximized ? '还原窗口' : '放大铺满'"><AppIcon :name="maximized ? 'minimize-2' : 'maximize-2'" :size="13" /></button>
+        <button class="ghost" @click="emit('close')" title="关闭"><AppIcon name="x" :size="13" /></button>
       </div>
     </div>
     <div class="body" ref="bodyEl" @contextmenu.prevent="onCtx($event)">
@@ -168,7 +168,7 @@ function clearAllMarks() {
         :title="r.isTarget ? '' : '点这一行，把上下文中心移到这里'"
         @click="jump(r.offset)"
       >
-        <span class="c-line">{{ r.lineNo }}</span>
+        <span class="c-line" :title="String(r.lineNo)">{{ r.lineNo }}</span>
         <span class="c-ts">{{ fmtTs(r.ts) }}</span>
         <span class="c-lvl">
           <i v-if="r.level >= 0" class="lvl" :class="'lvl-' + r.level">{{ LEVEL_NAMES[r.level] }}</i>
@@ -217,12 +217,11 @@ function clearAllMarks() {
   border-bottom: 1px solid var(--border);
 }
 .title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.t-icon { font-size: 14px; }
-.t-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12.5px; }
 .t-sub { color: var(--text-dim); font-size: 11.5px; flex: none; }
 .ctrl { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 12px; flex: none; }
 .ctrl label { display: flex; align-items: center; gap: 4px; }
-.copied-tip { color: var(--amber); font-size: 11.5px; flex: none; }
+.copied-tip { color: var(--accent-strong); font-size: 11.5px; flex: none; }
 .num { width: 48px; text-align: center; font-family: var(--mono); padding: 3px 4px; }
 .body { flex: 1; overflow: auto; padding: 4px 0; }
 .msg { padding: 40px; text-align: center; color: var(--text-dim); }
@@ -241,14 +240,19 @@ function clearAllMarks() {
 }
 .crow:hover { background: var(--bg-hover); }
 .crow.target {
-  background: var(--amber-active);
-  box-shadow: inset 4px 0 0 var(--amber);
-  outline: 1px solid var(--amber-line);
+  background: var(--accent-active);
+  box-shadow: inset 4px 0 0 var(--accent-strong);
+  outline: 1px solid var(--accent-line);
   outline-offset: -1px;
   font-weight: 600;
 }
-.crow.target .c-line { color: var(--amber); font-weight: 700; }
-.c-line { width: 62px; flex: none; color: var(--text-faint); text-align: right; margin-right: 12px; }
+.crow.target .c-line { color: var(--accent-strong); font-weight: 700; }
+/* 行号：窄列左对齐，超长省略、悬停 title 看全；min-width:0 防 flex 撑乱 */
+.c-line {
+  width: 48px; flex: none; min-width: 0; color: var(--text-faint);
+  text-align: left; overflow: hidden; text-overflow: ellipsis;
+  margin-right: 12px;
+}
 .c-ts { width: 160px; flex: none; color: var(--text-dim); font-size: 11.5px; }
 .c-lvl { width: 60px; flex: none; }
 .c-text {

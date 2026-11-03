@@ -1,107 +1,181 @@
-/* LogHunter — 碳晶·磷光设计系统
-   双主题：夜巡 Night Watch（默认，暖石墨碳面 + 磷光琥珀）/ 日间 Daylight（绿杠打印纸）
-   琥珀出处：大型机时代的琥珀磷光单色终端（P3 荧光）是最早的读日志仪器——强调色由此而来；
-   日间出处：绿杠打印纸的浅绿条纹本就为帮眼睛横穿宽行日志而生——纸面微绿、墨色文字、浮层即纸叠顶页
-   信号色板——级别 6 色 + 标记 5 色，两主题各自调校信噪比
+/* LogHunter — 指挥舱设计系统（v0.0.13）
+   基底：冷蓝黑（#07080D 系）+ 发丝边框 + 面板顶缘 1px 微光（--sheen）——质感来自材质而非彩色
+   纪律：界面骨架几乎无彩，彩色只属于日志信号（级别色/文件色/标记色）与查询色（accent）
+   主题 = 外观（auto|light|dark，挂 <html data-theme>）× 主题色（5 套，挂 <html data-palette>）
+   冰蓝为默认主题色：基底 token 即冰蓝；其余四套只覆盖 accent 与个别撞色的级别色
    token 一次定义，组件全部从这里取值；禁止在组件里硬编码色值 */
 
-/* ---------- 基础 token：夜巡（默认）—— 暖石墨梯 + 磷光琥珀 ----------
-   表面四级层级（elevation）：bg 页面 < panel 面板 < elev 组件 < float 浮层。
-   浮层（菜单/下拉/日历）必须明显亮于面板并配深投影，浮起可辨。
-   中性面统一暖相（碳/石墨），不带蓝灰——区别于通用暗色仪表盘 */
+/* ---------- 字体：Inter + JetBrains Mono（latin 自托管 woff2，OFL），中文走系统栈 ---------- */
+@font-face { font-family: 'Inter'; src: url('./assets/fonts/inter-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Inter'; src: url('./assets/fonts/inter-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Inter'; src: url('./assets/fonts/inter-600.woff2') format('woff2'); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('./assets/fonts/jetbrains-mono-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('./assets/fonts/jetbrains-mono-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('./assets/fonts/jetbrains-mono-600.woff2') format('woff2'); font-weight: 600; font-style: normal; font-display: swap; }
+
+/* ---------- 基础 token：夜巡（默认）= 冰蓝主题色的全套值 ---------- */
 :root {
-  --bg: #141312;          /* surface-0 页面 */
-  --bg-panel: #1b1a18;    /* surface-1 面板 */
-  --bg-elev: #262421;     /* surface-2 组件（按钮等） */
-  --bg-float: #343029;    /* surface-3 浮层（菜单/下拉/日历）——明显高于面板 */
-  --bg-hover: #36322a;    /* 悬停（在 panel 与 float 上都可见） */
-  --bg-float-hover: #3e3931; /* 浮层内菜单项悬停 */
-  --border: #2c2a26;
-  --border-strong: #4d483f;
-  --text: #ece8e0;
-  --text-dim: #a39d92;
-  --text-faint: #837d74;
-  --amber: #ffb224;
-  --amber-soft: rgba(255, 178, 36, .12);
-  --amber-line: rgba(255, 178, 36, .45);
-  --amber-ink: #241a05;          /* 琥珀底上的按钮文字 */
-  --amber-deep: #ffc24a;         /* 琥珀按钮悬停 */
-  --amber-active: rgba(255, 178, 36, .20); /* 目标行/选中行琥珀底 */
-  --danger: #e0564a;
-  --ok: #4fae5c;
-  --mask: rgba(8, 5, 2, .55);     /* 模态遮罩（暖黑） */
+  --bg: #07080D;            /* surface-0 页面 */
+  --bg-panel: #0C0E15;      /* surface-1 面板（指挥轨/状态行） */
+  --bg-elev: #12141D;       /* surface-2 组件（卡片/输入底） */
+  --bg-float: #191C26;      /* surface-3 浮层（菜单/下拉/弹层） */
+  --bg-hover: rgba(226, 230, 240, .055); /* 悬停（panel/elev 上都可见） */
+  --bg-float-hover: rgba(226, 230, 240, .09);
+  --border: #1C1F2A;
+  --border-strong: #2A2E3C;
+  --text: #E8EAF0;
+  --text-dim: #9AA0AE;
+  --text-faint: #69707F;
 
-  /* 浮层投影：暖黑加深拉开层次 */
-  --shadow-pop: 0 10px 36px rgba(12, 8, 2, .65);
-  --shadow-panel: -18px 0 50px rgba(12, 8, 2, .55);
+  /* 查询色（accent）=「你的查询」在界面上的颜色：主按钮/选中/焦点/命中高亮。
+     冰蓝夜间值；INFO 级别让位靛蓝避免与 accent 撞色 */
+  --accent: #5FB2FF;
+  --accent-strong: #8FCDFF;             /* 主按钮底/强调前景 */
+  --accent-ink: #071526;                /* accent 底上的文字 */
+  --accent-soft: rgba(95, 178, 255, .13);  /* 选中底/着色底 */
+  --accent-line: rgba(95, 178, 255, .50);  /* 描边/焦点环/下划 */
+  --accent-active: rgba(95, 178, 255, .20);
 
-  /* 查询命中高亮（关键字/正则默认琥珀，组件 fallback） */
-  --hl-kw-bg: rgba(255, 178, 36, .32);
-  --hl-kw-fg: #ffd984;
+  --danger: #ED6A5A;
+  --ok: #57C973;
+  --mask: rgba(4, 6, 12, .58);
 
-  /* 滚动条 */
-  --scroll-thumb: #332f29;
-  --scroll-thumb-hover: #443f36;
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, .6);
+  --shadow-panel: -20px 0 56px rgba(0, 0, 0, .45);
 
-  /* 信号色板——级别 6 色（夜巡：磷光词汇——TRACE 碳灰 / DEBUG 磷光青 /
-     INFO 磷光绿 / WARN 正黄（与琥珀金拉开色相）/ ERROR 暖红 / FATAL 酒红玫瑰（与 ERROR 分色相）） */
-  --lvl-0-fg: #928d84; --lvl-0-bg: #26241f;
-  --lvl-1-fg: #62c8d4; --lvl-1-bg: #163231;
-  --lvl-2-fg: #5ecb70; --lvl-2-bg: #12301c;
-  --lvl-3-fg: #ddca54; --lvl-3-bg: #3a3013;
-  --lvl-4-fg: #f28b7d; --lvl-4-bg: #3d1a14;
-  --lvl-5-fg: #fda4af; --lvl-5-bg: #471224;
+  /* 面板顶缘 1px 微光：冷峻质感的关键细节（面板/卡片 box-shadow 附带） */
+  --sheen: inset 0 1px 0 rgba(214, 222, 255, .045);
+  --sheen-light: inset 0 1px 0 rgba(255, 255, 255, .6);
 
-  --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
-  --ui: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  --radius: 8px;
+  /* 查询命中高亮（关键字/正则）——accent 同源的着色 */
+  --hl-kw-bg: rgba(95, 178, 255, .22);
+  --hl-kw-fg: #D9EAFF;
+
+  --scroll-thumb: #232735;
+  --scroll-thumb-hover: #333949;
+
+  /* 信号色板——级别 6 色（夜巡）：bg 由 fg 派生（14% 透明），改 fg 即自动配套
+     TRACE 碳灰 / DEBUG 天青 / INFO 靛蓝 / WARN 金 / ERROR 暖红 / FATAL 洋红（与 ERROR 分色相） */
+  --lvl-0-fg: #7C828F;
+  --lvl-1-fg: #5BC8DB;
+  --lvl-2-fg: #7B61E8;
+  --lvl-3-fg: #E9B44D;
+  --lvl-4-fg: #F4705F;
+  --lvl-5-fg: #D970E9;
+  --lvl-0-bg: color-mix(in srgb, var(--lvl-0-fg) 13%, transparent);
+  --lvl-1-bg: color-mix(in srgb, var(--lvl-1-fg) 14%, transparent);
+  --lvl-2-bg: color-mix(in srgb, var(--lvl-2-fg) 14%, transparent);
+  --lvl-3-bg: color-mix(in srgb, var(--lvl-3-fg) 15%, transparent);
+  --lvl-4-bg: color-mix(in srgb, var(--lvl-4-fg) 15%, transparent);
+  --lvl-5-bg: color-mix(in srgb, var(--lvl-5-fg) 15%, transparent);
+
+  /* 文件身份色（多文件合并序下的视觉锚点，最多显示 3 色循环） */
+  --file-0: #5A8DEE;
+  --file-1: #E9B44D;
+  --file-2: #5BCFA5;
+
+  --mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  --ui: 'Inter', 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+  --radius: 10px;    /* 面板/浮层 */
+  --radius-sm: 7px;  /* 控件 */
 }
 
-/* ---------- 基础 token：日间（绿杠打印纸 + 墨色信号） ----------
-   表面层级反转策略：页面微绿纸面、面板纸色更深、浮层最亮（纸叠顶页）——浮层在纸底上"抬起" */
+/* ---------- 主题色（夜巡覆盖块）：只写差异 ----------
+   极光青：DEBUG 微调更偏天蓝拉开与 accent 的距离
+   磷光绿 / 铂金：无级别撞色，仅 accent
+   暖琥珀：WARN 让位浅金，避免与 amber accent 同色相 */
+:root[data-palette='teal'] {
+  --accent: #2EC4B0; --accent-strong: #57D6C3; --accent-ink: #04231D;
+  --accent-soft: rgba(46, 196, 176, .11); --accent-line: rgba(46, 196, 176, .45); --accent-active: rgba(46, 196, 176, .18);
+  --hl-kw-bg: rgba(46, 196, 176, .20); --hl-kw-fg: #AEEBDF;
+  --lvl-1-fg: #4EC9F5;
+}
+:root[data-palette='green'] {
+  --accent: #62E88A; --accent-strong: #9BF3B2; --accent-ink: #07230F;
+  --accent-soft: rgba(98, 232, 138, .12); --accent-line: rgba(98, 232, 138, .50); --accent-active: rgba(98, 232, 138, .20);
+  --hl-kw-bg: rgba(98, 232, 138, .20); --hl-kw-fg: #D4FBE0;
+}
+:root[data-palette='plat'] {
+  --accent: #C9D1E0; --accent-strong: #E8EDF6; --accent-ink: #10131B;
+  --accent-soft: rgba(201, 209, 224, .12); --accent-line: rgba(201, 209, 224, .55); --accent-active: rgba(201, 209, 224, .20);
+  --hl-kw-bg: rgba(201, 209, 224, .20); --hl-kw-fg: #F0F3F9;
+}
+:root[data-palette='amber'] {
+  --accent: #F0A84B; --accent-strong: #F7C177; --accent-ink: #2A1804;
+  --accent-soft: rgba(240, 168, 75, .12); --accent-line: rgba(240, 168, 75, .48); --accent-active: rgba(240, 168, 75, .20);
+  --hl-kw-bg: rgba(240, 168, 75, .22); --hl-kw-fg: #FCE3B8;
+  --lvl-3-fg: #F2D06B;
+}
+
+/* ---------- 基础 token：日间 = 冰蓝日间全套（冰川蓝：低饱和偏青，去「默认蓝」味） ---------- */
 :root[data-theme='light'] {
-  --bg: #eef0e8;          /* surface-0 页面（微绿纸面） */
-  --bg-panel: #e6eadc;    /* surface-1 面板（纸色更深一档） */
-  --bg-elev: #dde2d0;     /* surface-2 组件 */
-  --bg-float: #fbfcf5;    /* surface-3 浮层（纸叠顶页，最亮） */
-  --bg-hover: #dde1cf;
-  --bg-float-hover: #eef1e4;
-  --border: #ccd1bd;
-  --border-strong: #a3ab91;
-  --text: #21251d;
-  --text-dim: #4a5044;
-  --text-faint: #6e7466;
-  --amber: #6b4a00;
-  --amber-soft: rgba(107, 74, 0, .10);
-  --amber-line: rgba(107, 74, 0, .40);
-  --amber-ink: #ffffff;
-  --amber-deep: #593d00;
-  --amber-active: rgba(107, 74, 0, .14);
-  --danger: #af4038;
-  --ok: #337a3f;
-  --mask: rgba(30, 32, 24, .40);
+  --bg: #F4F6F9;
+  --bg-panel: #FFFFFF;
+  --bg-elev: #EEF2F7;
+  --bg-float: #FFFFFF;
+  --bg-hover: rgba(24, 28, 40, .05);
+  --bg-float-hover: rgba(24, 28, 40, .08);
+  --border: #DFE4EE;
+  --border-strong: #C2CCDD;
+  --text: #181B24;
+  --text-dim: #575E6E;
+  --text-faint: #878E9E;
 
-  --shadow-pop: 0 10px 36px rgba(46, 50, 38, .22);
-  --shadow-panel: -18px 0 50px rgba(46, 50, 38, .18);
+  --accent: #0E76CC; --accent-strong: #0D67B3; --accent-ink: #FFFFFF;
+  --accent-soft: rgba(14, 118, 204, .09); --accent-line: rgba(14, 118, 204, .38); --accent-active: rgba(14, 118, 204, .14);
 
-  --hl-kw-bg: rgba(107, 74, 0, .18);
-  --hl-kw-fg: #6b4a00;
+  --danger: #C2402F;
+  --ok: #2E8B47;
+  --mask: rgba(24, 28, 40, .40);
 
-  --scroll-thumb: #c8cdb8;
-  --scroll-thumb-hover: #b2b9a2;
+  --shadow-pop: 0 18px 44px rgba(28, 34, 56, .16);
+  --shadow-panel: -20px 0 56px rgba(28, 34, 56, .14);
 
-  /* 信号色板——级别 6 色（日间：深墨 + 淡纸底；DEBUG 用青墨而非通用 UI 蓝，FATAL 用酒红墨） */
-  --lvl-0-fg: #5a6054; --lvl-0-bg: #dfe3d3;
-  --lvl-1-fg: #0c5f6b; --lvl-1-bg: rgba(12, 95, 107, .12);
-  --lvl-2-fg: #256633; --lvl-2-bg: rgba(37, 102, 51, .12);
-  --lvl-3-fg: #6f5000; --lvl-3-bg: rgba(111, 80, 0, .15);
-  --lvl-4-fg: #a52f25; --lvl-4-bg: rgba(165, 47, 37, .11);
-  --lvl-5-fg: #8e1c47; --lvl-5-bg: rgba(142, 28, 71, .12);
+  --hl-kw-bg: rgba(14, 118, 204, .16);
+  --hl-kw-fg: #0A5C9B;
+
+  --scroll-thumb: #C9D2E0;
+  --scroll-thumb-hover: #AEBBCE;
+
+  /* 级别 6 色（日间：深墨前景，bg 派生 11%） */
+  --lvl-0-fg: #5C6470;
+  --lvl-1-fg: #0E7490;
+  --lvl-2-fg: #1D4ED8;
+  --lvl-3-fg: #B45309;
+  --lvl-4-fg: #DC2626;
+  --lvl-5-fg: #A21CAF;
+
+  --file-0: #2563EB;
+  --file-1: #B45309;
+  --file-2: #0D9488;
+}
+
+/* ---------- 主题色（日间覆盖块） ---------- */
+:root[data-theme='light'][data-palette='teal'] {
+  --accent: #0D9488; --accent-strong: #0F766E; --accent-ink: #FFFFFF;
+  --accent-soft: rgba(13, 148, 136, .10); --accent-line: rgba(13, 148, 136, .40); --accent-active: rgba(13, 148, 136, .14);
+  --hl-kw-bg: rgba(13, 148, 136, .15); --hl-kw-fg: #0F766E;
+  --lvl-1-fg: #0369A1;
+}
+:root[data-theme='light'][data-palette='green'] {
+  --accent: #0E9F4E; --accent-strong: #0B7A3C; --accent-ink: #FFFFFF;
+  --accent-soft: rgba(14, 159, 78, .10); --accent-line: rgba(14, 159, 78, .40); --accent-active: rgba(14, 159, 78, .14);
+  --hl-kw-bg: rgba(14, 159, 78, .15); --hl-kw-fg: #0B7A3C;
+}
+:root[data-theme='light'][data-palette='plat'] {
+  --accent: #566072; --accent-strong: #3D4656; --accent-ink: #FFFFFF;
+  --accent-soft: rgba(86, 96, 114, .10); --accent-line: rgba(86, 96, 114, .45); --accent-active: rgba(86, 96, 114, .14);
+  --hl-kw-bg: rgba(86, 96, 114, .15); --hl-kw-fg: #3D4656;
+}
+:root[data-theme='light'][data-palette='amber'] {
+  --accent: #C0801A; --accent-strong: #A5690E; --accent-ink: #FFFFFF;
+  --accent-soft: rgba(192, 128, 26, .09); --accent-line: rgba(192, 128, 26, .38); --accent-active: rgba(192, 128, 26, .14);
+  --hl-kw-bg: rgba(192, 128, 26, .16); --hl-kw-fg: #8A5A0E;
+  --lvl-3-fg: #8A6A00;
 }
 
 /* 信号色板——右键格式标记 5 槽位（--hl-bg/--hl-fg 驱动高亮组件）：
-   槽位名红/黄/绿/蓝/紫（constants.ts）与色相族一一对应；
-   夜巡底透明度 ~.30 + 前景提亮一档（对比度增强） */
+   槽位名红/黄/绿/蓝/紫（constants.ts）与色相族一一对应；夜间透明底 + 前景提亮 */
 .mark-0 { --hl-bg: rgba(242, 116, 98, .36);   --hl-fg: #ffbcb2; }
 .mark-1 { --hl-bg: rgba(217, 184, 74, .32);   --hl-fg: #f0d878; }
 .mark-2 { --hl-bg: rgba(96, 200, 115, .30);   --hl-fg: #96e5a2; }
@@ -114,7 +188,7 @@
 :root[data-theme='light'] .mark-4 { --hl-bg: rgba(110, 70, 180, .12);  --hl-fg: #6e46b4; }
 
 /* 主题切换的背光过渡：切换瞬间由 JS 短暂挂到 <html>，250ms 后移除，
-   避免常态全局 transition 的性能损耗 */
+   避免常态全局 transition 的性能损耗（主题色切换同样复用） */
 .theme-transitioning *,
 .theme-transitioning *::before,
 .theme-transitioning *::after {
@@ -135,60 +209,65 @@ body {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   background: var(--bg-elev);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12.5px;
   font-family: var(--ui);
   transition: border-color .12s, background .12s, color .12s;
 }
 button:hover { border-color: var(--border-strong); background: var(--bg-hover); }
 button:disabled { opacity: .4; cursor: not-allowed; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--amber-line); outline-offset: 1px; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 1px; }
 
 button.primary {
-  background: var(--amber);
-  border-color: var(--amber);
-  color: var(--amber-ink);
-  font-weight: 700;
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--accent-ink);
+  font-weight: 600;
 }
-button.primary:hover { background: var(--amber-deep); }
+button.primary:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 button.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
 button.ghost:hover { color: var(--text); border-color: var(--border); background: transparent; }
 button.danger { color: var(--text-dim); }
 button.danger:hover { border-color: var(--danger); color: var(--danger); }
 
 input[type="text"], input[type="number"], input[type="datetime-local"], select {
-  background: var(--bg);
+  background: var(--bg-panel);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
   font-size: 13px;
   outline: none;
-  transition: border-color .12s;
+  transition: border-color .12s, box-shadow .12s;
+  font-family: var(--ui);
 }
-input:focus { border-color: var(--amber-line); }
+input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
 input::placeholder { color: var(--text-faint); }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 5px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* 级别徽标 —— 信息编码，非装饰；色值走信号色板 token */
+/* 级别徽标 —— 信息编码，非装饰；胶囊化，色值走信号色板 token（bg 由 fg 派生） */
 .lvl {
   display: inline-block;
   padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 11px;
+  border-radius: 999px;
+  font-size: 10px;
   font-family: var(--mono);
   line-height: 17px;
   font-weight: 600;
-  letter-spacing: .02em;
+  letter-spacing: .04em;
 }
 .lvl-0 { color: var(--lvl-0-fg); background: var(--lvl-0-bg); }
 .lvl-1 { color: var(--lvl-1-fg); background: var(--lvl-1-bg); }
@@ -196,6 +275,23 @@ input::placeholder { color: var(--text-faint); }
 .lvl-3 { color: var(--lvl-3-fg); background: var(--lvl-3-bg); }
 .lvl-4 { color: var(--lvl-4-fg); background: var(--lvl-4-bg); }
 .lvl-5 { color: var(--lvl-5-fg); background: var(--lvl-5-bg); }
+
+/* 条件胶囊（chips）——指令条的查询条件载体，全应用共用 */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2.5px 10px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  background: transparent;
+}
+.chip.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); }
+.chip .x { opacity: .55; display: inline-flex; cursor: pointer; border: none; padding: 0; background: none; }
+.chip .x:hover { opacity: 1; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }

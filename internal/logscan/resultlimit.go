@@ -25,6 +25,9 @@ func calcResultLimit(totalPhys int64) int {
 	return n
 }
 
+// PhysicalMemTotal 物理内存总量（字节），供应用层展示（指挥轨状态卡实时内存）
+func PhysicalMemTotal() int64 { return totalPhysicalMem() }
+
 // MemorySoftLimit Go 运行时软内存上限（main 启动时经 debug.SetMemoryLimit 生效）：
 // 物理内存×50%（clamp 2~16GB）。与结果条数上限各司其职——条数上限管「物化多少行」，
 // 软上限管「GC 以多大堆为目标加压」：超限时 GC 自动更积极，防止工作集虚高不归还

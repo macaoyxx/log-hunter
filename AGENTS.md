@@ -62,8 +62,8 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 
 - 注释一律中文；复杂业务逻辑写详细「为什么」注释，简单代码不注释。
 - 前端不引 UI 框架，组件手写；高亮必须走 `HighlightText.vue` 的分段渲染防 HTML 注入，严禁直接 v-html 拼接日志内容。标记色经 CSS 变量（`--hl-bg`/`--hl-fg`）由 `style.css` 的 `.mark-0~4` 驱动，不要在组件里硬编码色值。
-- **颜色一律走 `style.css` token，双主题（夜巡 `:root` / 日间 `[data-theme='light']`）下严禁组件硬编码色值**。表面四级：`--bg`（页面）< `--bg-panel`（面板）< `--bg-elev`（组件）< `--bg-float`（浮层）——新增浮层（菜单/下拉）必须用 `--bg-float` + `--shadow-pop`；信号色板（`--lvl-N-fg/bg`、`.mark-N`）只在此处定义。
-- 主题状态在 `App.vue`（三态：auto/light/dark，localStorage `lh-theme` + matchMedia），启动预设在 `main.ts`（防闪色），勿在别处操作 `data-theme`。
+- **颜色一律走 `style.css` token，双主题（夜巡 `:root` / 日间 `[data-theme='light']`）下严禁组件硬编码色值**。表面四级：`--bg`（页面）< `--bg-panel`（面板）< `--bg-elev`（组件）< `--bg-float`（浮层）——新增浮层（菜单/下拉）必须用 `--bg-float` + `--shadow-pop`；信号色板（`--lvl-N-fg/bg`、`.mark-N`）与查询色（`--accent-*` 五套主题色作用域）只在此处定义。
+- 主题系统在 `App.vue`（外观三态 auto/light/dark + 主题色五套 ice/teal/green/plat/amber，localStorage `lh-theme`/`lh-palette` + matchMedia），启动预设在 `main.ts`（防闪色），勿在别处操作 `data-theme`/`data-palette`；持久化走 `SetThemeSettings`（config.json `settings.theme`）。图标一律 `AppIcon.vue` + `icons.ts` 手写 SVG，勿引图标库或用 emoji。
 - 详情面板右键菜单（`ContextMenu.vue`）与格式标记槽位（`ContextPanel.vue` 内 5 槽）是纯前端状态，面板卸载即清；标记优先于查询高亮（重叠区间让位），该优先级在 `HighlightText.vue` 的区间裁剪逻辑里，改动保持。
 - 大结果集靠虚拟滚动 + 分段续载，任何列表改动不得破坏这一点。行渲染用**槽位复用**（`v-for` 的 key 是段内槽位号而非全局行号，内容经 `visibleRows` computed 驱动）——改成全局行号作 key 会退化成滚动时逐行挂载/卸载；无高亮条件时走纯文本插值快速路径（跳过 HighlightText 实例化）。
 - 结果表横向画布宽度封顶 `MAX_CANVAS_W`（20 万 px）——极长行（如整行 SQL dump 数十万字节）按 12px/rune 撑开会是数百万 px 的超大层，WebView 光栅化直接卡死界面（v0.0.5 实测 75 万 rune → 901 万 px 全界面卡）；超长行看全文走双击行的上下文面板。

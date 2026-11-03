@@ -34,6 +34,8 @@ export function LastStartupCost():Promise<string>;
 
 export function ListFiles():Promise<Array<logscan.FileEntry>>;
 
+export function MemUsage():Promise<main.MemUsageInfo>;
+
 export function PickFiles():Promise<Array<string>>;
 
 export function Query(arg1:main.QuerySpecJSON):Promise<logscan.QueryStats>;
@@ -50,7 +52,7 @@ export function SaveHistory(arg1:string,arg2:string):Promise<void>;
 
 export function SetMerged(arg1:boolean):Promise<void>;
 
-export function SetTheme(arg1:string):Promise<void>;
+export function SetThemeSettings(arg1:string,arg2:string):Promise<void>;
 
 export function StartUpdate():Promise<void>;
 

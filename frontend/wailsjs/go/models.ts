@@ -14,18 +14,30 @@ export namespace appconf {
 	        this.spec = source["spec"];
 	    }
 	}
-	export class Conf {
-	    theme: string;
-	    history: HistItem[];
+	export class ThemeSettings {
+	    appearance: string;
+	    palette: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new Conf(source);
+	        return new ThemeSettings(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.theme = source["theme"];
-	        this.history = this.convertValues(source["history"], HistItem);
+	        this.appearance = source["appearance"];
+	        this.palette = source["palette"];
+	    }
+	}
+	export class Settings {
+	    theme: ThemeSettings;
+	
+	    static createFrom(source: any = {}) {
+	        return new Settings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.theme = this.convertValues(source["theme"], ThemeSettings);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -46,6 +58,42 @@ export namespace appconf {
 		    return a;
 		}
 	}
+	export class Conf {
+	    settings: Settings;
+	    history: HistItem[];
+	    theme?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Conf(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.settings = this.convertValues(source["settings"], Settings);
+	        this.history = this.convertValues(source["history"], HistItem);
+	        this.theme = source["theme"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
 
 }
 
@@ -189,6 +237,22 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class MemUsageInfo {
+	    ws: number;
+	    sysUsed: number;
+	    sysTotal: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MemUsageInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ws = source["ws"];
+	        this.sysUsed = source["sysUsed"];
+	        this.sysTotal = source["sysTotal"];
+	    }
 	}
 	export class QuerySpecJSON {
 	    fileIds: number[];

@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"log-hunter/internal/appconf"
 	"log-hunter/internal/logscan"
@@ -501,11 +503,58 @@ func (a *App) GetConfig() appconf.Conf {
 	return appconf.Conf{}
 }
 
-// SetTheme 持久化主题偏好
-func (a *App) SetTheme(theme string) {
+// SetThemeSettings 持久化主题偏好（appearance: auto|light|dark；palette: ice|teal|green|plat|amber）
+func (a *App) SetThemeSettings(appearance, palette string) {
 	if s := a.store(); s != nil {
-		_ = s.SetTheme(theme)
+		_ = s.SetThemeSettings(appearance, palette)
 	}
+}
+
+// MemUsageInfo 指挥轨状态卡的实时内存信息
+type MemUsageInfo struct {
+	WS       uint64 `json:"ws"`       // 后端进程工作集（索引驻留其内）
+	SysUsed  uint64 `json:"sysUsed"`  // 系统已用物理内存
+	SysTotal uint64 `json:"sysTotal"` // 物理内存总量
+}
+
+// psapi GetProcessMemoryInfo：x/sys 未封装该 API，走 stdlib syscall 直调
+// （psapi.dll 在新系统转发 kernel32 的 K32 变体，无需区分）
+var (
+	modPsapi                 = syscall.NewLazyDLL("psapi.dll")
+	procGetProcessMemoryInfo = modPsapi.NewProc("GetProcessMemoryInfo")
+)
+
+// processMemoryCounters 对应 Win32 PROCESS_MEMORY_COUNTERS（字段顺序不可动）
+type processMemoryCounters struct {
+	CB                         uint32
+	PageFaultCount             uint32
+	PeakWorkingSetSize         uint64
+	WorkingSetSize             uint64
+	QuotaPeakPagedPoolUsage    uint64
+	QuotaPagedPoolUsage        uint64
+	QuotaPeakNonPagedPoolUsage uint64
+	QuotaNonPagedPoolUsage     uint64
+	PagefileUsage              uint64
+	PeakPagefileUsage          uint64
+}
+
+// MemUsage 实时内存快照（前端 2s 轮询）：后端进程工作集 + 系统已用/总量
+func (a *App) MemUsage() MemUsageInfo {
+	var m MemUsageInfo
+	if total, avail := logscan.SystemMemory(); total > avail {
+		m.SysTotal, m.SysUsed = uint64(total), uint64(total-avail)
+	}
+	var pm processMemoryCounters
+	pm.CB = uint32(unsafe.Sizeof(pm))
+	h, err := syscall.GetCurrentProcess()
+	if err == nil {
+		r1, _, _ := procGetProcessMemoryInfo.Call(
+			uintptr(h), uintptr(unsafe.Pointer(&pm)), uintptr(pm.CB))
+		if r1 != 0 {
+			m.WS = pm.WorkingSetSize
+		}
+	}
+	return m
 }
 
 // SaveHistory 保存一条查询历史（同标签去重置顶，上限 20）

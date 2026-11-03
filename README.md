@@ -7,7 +7,7 @@
 拖拽多个日志文件（支持 GB 级），关键字 / 正则 / 时间范围 / 级别组合查询快速定位问题。
 纯本地运行 · 索引全内存 · 不落盘 · 零残留
 
-[下载最新版](https://github.com/macaoyxx/log-hunter/releases/latest) · [为什么快](#性能) · [快速上手](#操作演示)
+[下载最新版](https://github.com/macaoyxx/log-hunter/releases/latest) · [为什么快](#为什么用-loghunter) · [操作演示](#操作演示)
 
 ![首页](docs/assets/product/home.png)
 

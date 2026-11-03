@@ -407,12 +407,23 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
 <template>
   <div class="result">
     <div v-if="stats" class="statusbar">
-      <span class="hit">找到 <b>{{ stats.total.toLocaleString() }}</b> 条<span class="cost">· {{ stats.costMs }} ms</span></span>
+      <span class="hitnum">{{ stats.total.toLocaleString() }}</span><span class="hitlab">命中</span>
+      <span class="cost">{{ stats.costMs }} ms</span>
+      <span class="vsep"></span>
       <span class="viewswitch" role="group" title="多文件结果的排列方式：平铺=按拖入顺序逐文件拼接；时间合并=按日志时间归并成单一时间线（无时间戳的行跟随上一条有时间日志，无时间文件置尾）">
         <button :class="{ on: !merged }" :disabled="querying || merging" @click="emit('toggle-merged', false)">平铺</button>
         <button :class="{ on: merged }" :disabled="querying || merging" @click="emit('toggle-merged', true)">时间合并</button>
       </span>
       <span v-if="merging" class="merging-tip">排序中…</span>
+      <span class="vsep"></span>
+      <span class="lvlchips">
+        <button v-for="c in levelChips" :key="c.lv" class="lvc" :class="'lvc-' + c.lv"
+          :title="`只看 ${c.name}（${c.n.toLocaleString()} 条）`" @click="emit('level-click', c.lv)">
+          <i></i>{{ c.n.toLocaleString() }}
+        </button>
+      </span>
+      <!-- 分隔线随警示条件渲染，无警示时不留孤线 -->
+      <span v-if="stats.truncated || (merged && noTimeNames.length) || stats.skippedNoTime > 0" class="vsep"></span>
       <span v-if="stats.truncated" class="trunc"
         :title="`命中过多，只保留前 ${(stats.resultLimit ?? 2_000_000).toLocaleString()} 条（按内存自适应）`">⚠ 已截断</span>
       <span v-if="merged && noTimeNames.length" class="notime" :title="'无时间列，命中置尾：\n' + noTimeNames.join('\n')">
@@ -420,19 +431,14 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
       </span>
       <span v-if="stats.skippedNoTime > 0" class="notime"
         title="这些文件没有时间列，无法参与时间范围筛选；想查它们请清空时间条件">已跳过 {{ stats.skippedNoTime }} 个无时间文件</span>
-      <span class="lvlstats">
-        <button v-for="c in levelChips" :key="c.lv" class="lvl-stat" :class="'lvlbtn-' + c.lv"
-          :title="`点击只看 ${c.name}`" @click="emit('level-click', c.lv)">
-          {{ c.name }} <b>{{ c.n.toLocaleString() }}</b>
-        </button>
-      </span>
       <span class="spacer"></span>
-      <span class="nav">
-        <button class="ghost" :disabled="selIdx <= 0" @click="prevRow" title="上一条（↑）">◀ 上一条</button>
+      <span class="navgrp">
+        <button class="icon-only" :disabled="selIdx <= 0" @click="prevRow" title="上一条（↑）"><AppIcon name="chevron-left" :size="14" /></button>
         <span class="jump">
-          第 <input type="number" min="1" :max="total" v-model="jumpTo" @keydown.enter.prevent="doJump" /> / {{ total.toLocaleString() }} 条
+          <input type="number" min="1" :max="total" v-model="jumpTo" @keydown.enter.prevent="doJump" />
+          <span class="of">/ {{ total.toLocaleString() }}</span>
         </span>
-        <button class="ghost" :disabled="selIdx < 0 || selIdx >= total - 1" @click="nextRow" title="下一条（↓）">下一条 ▶</button>
+        <button class="icon-only" :disabled="selIdx < 0 || selIdx >= total - 1" @click="nextRow" title="下一条（↓）"><AppIcon name="chevron-right" :size="14" /></button>
       </span>
       <div class="exp-wrap">
         <button :class="{ open: expOpen }" title="导出查询结果" @click="expOpen = !expOpen">
@@ -571,8 +577,38 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   font-size: 12.5px;
   flex-wrap: wrap;
 }
-.hit b { color: var(--accent-strong); font-size: 14px; font-family: var(--mono); }
-.cost { color: var(--text-dim); font-family: var(--mono); margin-left: 4px; font-size: 11.5px; }
+/* 状态栏方案 A：分组单行 —— 大命中数 | 视图 | 级别徽标(点=筛选) | 导航(纯图标) | 导出 */
+.hitnum { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -.01em; }
+.hitlab { font-size: 11px; color: var(--text-faint); }
+.cost { color: var(--text-faint); font-family: var(--mono); font-size: 11px; }
+.vsep { width: 1px; height: 18px; background: var(--border); flex: none; }
+/* 紧凑级别徽标：色点+数字（悬停显级别名），点击筛选 */
+.lvlchips { display: flex; gap: 4px; align-items: center; flex: 1; min-width: 0; overflow: hidden; }
+.lvc {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+  border-radius: 999px; border: 1px solid transparent; background: transparent;
+  cursor: pointer; font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); white-space: nowrap;
+}
+.lvc i { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--lvl-fg, var(--text-faint)); }
+.lvc:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.lvc-0 { --lvl-fg: var(--lvl-0-fg); } .lvc-1 { --lvl-fg: var(--lvl-1-fg); }
+.lvc-2 { --lvl-fg: var(--lvl-2-fg); } .lvc-3 { --lvl-fg: var(--lvl-3-fg); }
+.lvc-4 { --lvl-fg: var(--lvl-4-fg); } .lvc-5 { --lvl-fg: var(--lvl-5-fg); }
+.navgrp { display: flex; align-items: center; gap: 2px; flex: none; }
+.icon-only {
+  background: transparent; border: none; color: var(--text-dim); padding: 5px 7px; border-radius: 5px;
+}
+.icon-only:hover:not(:disabled) { background: var(--bg-hover); border: none; color: var(--text); }
+.icon-only:disabled { opacity: .35; cursor: default; }
+.jump { display: inline-flex; align-items: baseline; gap: 5px; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); padding: 0 4px; white-space: nowrap; }
+.jump input {
+  width: auto; min-width: 60px; max-width: 90px; background: transparent; border: none;
+  border-bottom: 1px dashed var(--border-strong); border-radius: 0;
+  color: var(--text); font-weight: 600; font-size: 12px; font-family: var(--mono);
+  padding: 0 2px; text-align: center; outline: none;
+}
+.jump input:focus { border-bottom-color: var(--accent-line); }
+.jump .of { color: var(--text-faint); }
 .trunc { color: var(--lvl-3-fg); }
 .notime { color: var(--text-dim); font-size: 11.5px; }
 /* 视图模式切换：两态分段，激活态沿用琥珀选中惯例（同日历选中格/段末按钮） */
@@ -595,16 +631,6 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
 .viewswitch button:disabled { opacity: .5; cursor: default; }
 .spacer { flex: 1; }
 .dim { color: var(--text-dim); }
-.lvlstats { display: flex; gap: 4px; }
-.lvl-stat { font-size: 11px; padding: 2px 7px; font-family: var(--mono); border: none; background: transparent; }
-.lvl-stat b { font-weight: 700; }
-.lvlbtn-0 { color: var(--lvl-0-fg); } .lvlbtn-0:hover { background: var(--lvl-0-bg); }
-.lvlbtn-1 { color: var(--lvl-1-fg); } .lvlbtn-1:hover { background: var(--lvl-1-bg); }
-.lvlbtn-2 { color: var(--lvl-2-fg); } .lvlbtn-2:hover { background: var(--lvl-2-bg); }
-.lvlbtn-3 { color: var(--lvl-3-fg); } .lvlbtn-3:hover { background: var(--lvl-3-bg); }
-.lvlbtn-4 { color: var(--lvl-4-fg); } .lvlbtn-4:hover { background: var(--lvl-4-bg); }
-.lvlbtn-5 { color: var(--lvl-5-fg); } .lvlbtn-5:hover { background: var(--lvl-5-bg); }
-.nav { display: flex; align-items: center; gap: 6px; }
 /* 导出下拉（浮层表面层级） */
 .exp-wrap { position: relative; flex: none; }
 .exp-wrap > button.open { color: var(--accent-strong); border-color: var(--accent-line); }
@@ -620,8 +646,6 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   padding: 6px 10px; font-size: 12px; color: var(--text); cursor: pointer;
 }
 .exp-pop .pk:hover { background: var(--bg-float-hover); border: none; }
-.jump { color: var(--text-dim); display: flex; align-items: center; gap: 4px; font-size: 11.5px; white-space: nowrap; }
-.jump input { width: 96px; padding: 3px 6px; font-family: var(--mono); }
 
 .viewport-empty {
   flex: 1;

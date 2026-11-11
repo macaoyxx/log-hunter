@@ -212,6 +212,18 @@ func (a *App) GetResults(offset, limit int) []logscan.ResultRow {
 	return a.session.GetResults(offset, limit)
 }
 
+// GetTimeHistogram 当前结果集的时间分布直方图（查询完成后前端拉取渲染）；
+// 结果集变化（重查/切视图）后需重新拉取
+func (a *App) GetTimeHistogram() *logscan.Histogram {
+	return a.session.TimeHistogram(60)
+}
+
+// GetIndexByTime 双击直方图跳转定位：结果集中「该时刻之后最早一条」的全局下标
+//（-1 = 该时刻晚于全部结果；tsNS 为 unixNano）
+func (a *App) GetIndexByTime(tsNS int64) int {
+	return a.session.IndexByTime(tsNS)
+}
+
 // SetMerged 切换结果视图模式：false=平铺（文件加入序+行号），true=按时间归并；
 // 有结果时后端即时重排，不重新扫描文件
 func (a *App) SetMerged(merged bool) {

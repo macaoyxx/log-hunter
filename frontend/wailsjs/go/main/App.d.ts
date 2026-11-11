@@ -24,9 +24,13 @@ export function GetConfig():Promise<appconf.Conf>;
 
 export function GetContext(arg1:number,arg2:number,arg3:number,arg4:number):Promise<Array<logscan.ContextRow>>;
 
+export function GetIndexByTime(arg1:number):Promise<number>;
+
 export function GetLineText(arg1:number,arg2:number):Promise<string>;
 
 export function GetResults(arg1:number,arg2:number):Promise<Array<logscan.ResultRow>>;
+
+export function GetTimeHistogram():Promise<logscan.Histogram>;
 
 export function GetVersion():Promise<string>;
 

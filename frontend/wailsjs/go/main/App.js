@@ -42,12 +42,20 @@ export function GetContext(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetContext'](arg1, arg2, arg3, arg4);
 }
 
+export function GetIndexByTime(arg1) {
+  return window['go']['main']['App']['GetIndexByTime'](arg1);
+}
+
 export function GetLineText(arg1, arg2) {
   return window['go']['main']['App']['GetLineText'](arg1, arg2);
 }
 
 export function GetResults(arg1, arg2) {
   return window['go']['main']['App']['GetResults'](arg1, arg2);
+}
+
+export function GetTimeHistogram() {
+  return window['go']['main']['App']['GetTimeHistogram']();
 }
 
 export function GetVersion() {

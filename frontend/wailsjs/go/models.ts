@@ -151,6 +151,28 @@ export namespace logscan {
 	        this.tsMax = source["tsMax"];
 	    }
 	}
+	export class Histogram {
+	    start: number;
+	    step: number;
+	    buckets: number[][];
+	    maxTotal: number;
+	    noTs: number;
+	    hasData: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Histogram(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.start = source["start"];
+	        this.step = source["step"];
+	        this.buckets = source["buckets"];
+	        this.maxTotal = source["maxTotal"];
+	        this.noTs = source["noTs"];
+	        this.hasData = source["hasData"];
+	    }
+	}
 	export class QueryStats {
 	    total: number;
 	    truncated: boolean;

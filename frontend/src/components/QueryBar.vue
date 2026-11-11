@@ -263,6 +263,19 @@ function addLevelAndSearch(lv: number) {
   showAdvanced.value = true
   search()
 }
+// 时间直方图拖框联动：设置时间范围并立即重查（秒精度，与 brush 选区对齐；
+// startNs/endNs 为 0 表示清除时间条件 = 复原）。时间胶囊经现有 chain 自动呈现
+function setTimeRangeAndSearch(startNs: number, endNs: number) {
+  const fmt = (ns: number) => {
+    if (!ns) return ''
+    const d = new Date(ns / 1e6 - new Date(ns / 1e6).getTimezoneOffset() * 60000)
+    return d.toISOString().slice(0, 19)
+  }
+  tsStart.value = fmt(startNs)
+  tsEnd.value = fmt(endNs)
+  showAdvanced.value = true
+  search()
+}
 // 按最近一次查询条件重跑，供删除文件后自动刷新剩余文件的结果。
 // 无历史时（如首次加载的自动全览不经 search() 未入历史）退回
 // 按当前输入框条件查询（空条件 = 全览），fileIds 由 App 层按勾选重填
@@ -270,7 +283,7 @@ function rerunLast() {
   if (history.value[0]) emit('search', history.value[0].spec)
   else search()
 }
-defineExpose({ reset, addLevelAndSearch, rerunLast })
+defineExpose({ reset, addLevelAndSearch, rerunLast, setTimeRangeAndSearch })
 
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Enter') search()

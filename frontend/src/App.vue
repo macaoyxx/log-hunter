@@ -4,7 +4,7 @@ import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff, BrowserOpenURL } from '
 import {
   AddFiles, ClearAll, ListFiles, Query, Cancel, RemoveFile,
   GetVersion, CheckUpdate, StartUpdate, Restart, GetConfig, SetThemeSettings, SetMerged,
-  ReportStartupReady, LastStartupCost,
+  ReportStartupReady, LastStartupCost, GetIndexByTime,
 } from '../wailsjs/go/main/App'
 import { logscan, main } from '../wailsjs/go/models'
 import SideRail from './components/SideRail.vue'
@@ -12,6 +12,7 @@ import appicon from './assets/appicon.png'
 import AppIcon from './components/AppIcon.vue'
 import ThemePopover from './components/ThemePopover.vue'
 import QueryBar from './components/QueryBar.vue'
+import TimeHistogram from './components/TimeHistogram.vue'
 import ResultTable from './components/ResultTable.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import { DEFAULT_PALETTE, PALETTE_IDS, type Appearance, type PaletteId } from './theme'
@@ -45,6 +46,7 @@ const hlRegex = ref('')
 const ctxTarget = ref<{ fileId: number; offset: number } | null>(null)
 
 const queryBarRef = ref<InstanceType<typeof QueryBar> | null>(null)
+const resultTableRef = ref<InstanceType<typeof ResultTable> | null>(null)
 
 // ---------- 主题系统：外观三态 × 主题色五套 ----------
 // config.json 的 settings.theme 为权威持久化，localStorage（lh-theme/lh-palette）作第一道防闪与迁移源
@@ -371,6 +373,18 @@ function levelClick(lv: number) {
   queryBarRef.value?.addLevelAndSearch(lv)
 }
 
+// 时间直方图拖框联动：设置时间范围并立即重查（0/0 = 清除时间条件复原）
+function onHistBrush(startNs: number, endNs: number) {
+  queryBarRef.value?.setTimeRangeAndSearch(startNs, endNs)
+}
+// 时间直方图双击跳转：定位到结果集中该时刻之后最早一条
+function onHistJump(ns: number) {
+  GetIndexByTime(ns).then(i => { if (i >= 0) resultTableRef.value?.jumpToIndex(i) }).catch(() => {})
+}
+// 勾选文件中是否存在时间格式文件（全无时间则直方图无意义，不渲染）
+const hasTimeSelected = computed(() =>
+  files.value.some(f => f.hasTime && selected.value.has(f.id)))
+
 // 切换结果视图（平铺/时间合并）：先等后端重排完成再更新状态，
 // 触发结果表清缓存重拉——避免 GetResults 赶在重排前拿到旧序数据；
 // 全量结果重排需几百 ms，merging 态让按钮即时给反馈
@@ -448,7 +462,9 @@ function openContext(fileId: number, offset: number) {
         <pre class="notice-text">{{ fileNotice }}</pre>
         <button class="notice-x" title="关闭提示" @click="fileNotice = ''"><AppIcon name="x" :size="11" /></button>
       </div>
+      <TimeHistogram v-if="stats && hasTimeSelected" :stats="stats" :merged="mergedMode" @brush="onHistBrush" @jump="onHistJump" />
       <ResultTable
+        ref="resultTableRef"
         :stats="stats" :querying="querying" :progress="queryProg"
         :file-count="files.length" :file-names="fileNameMap"
         :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"

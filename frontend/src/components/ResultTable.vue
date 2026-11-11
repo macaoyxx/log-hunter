@@ -402,6 +402,9 @@ function showToast(msg: string, kind: 'danger' | 'ok' = 'danger') {
   window.clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => { toast.value = null }, 2500)
 }
+
+// 暴露给父组件：时间直方图双击跳转（滚到指定结果下标并选中，含跨段处理）
+defineExpose({ jumpToIndex })
 </script>
 
 <template>

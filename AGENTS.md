@@ -23,13 +23,14 @@ cd frontend && npm run build # 前端类型检查（vue-tsc --noEmit）+ 构建
 ```
 internal/logscan/   核心引擎 —— 纯库，严禁 import Wails 或任何 UI 依赖
 ├── merge.go        时间合并排序（锚点 key+索引置换）与分组顺序读
+├── histogram.go    时间直方图桶聚合（整刻度桶宽、按文件并行）与时刻跳转定位
 ├── resultlimit.go  结果上限内存自适应（Windows 物理内存查询）
 ├── unzip.go        zip 解压（内容级二进制校验、嵌套 zip 递归≤3 层、临时目录生命周期与启动清扫）
 internal/appconf/   应用配置持久化 —— 纯库：data/config.json（settings.theme 主题偏好+查询历史，旧顶层 theme 读时自动迁移），不含 UI
 internal/update/    应用内自动更新 —— 纯库：下载（进度回调）/sha256 强制校验（Release 缺 .sha256 即拒更）/解压限长/rename 自替换
 app.go              Wails 绑定层：包装 logscan.Session，进度事件、系统对话框、剪贴板、更新编排
 main.go             Wails 入口（窗口/拖拽/主题配置/启动埋点）
-frontend/src/       Vue 3 界面（指挥舱布局：SideRail 左指挥轨+指令条+结果表；手写组件，无 UI 框架/无 router/无状态管理库）
+frontend/src/       Vue 3 界面（指挥舱布局：SideRail 左指挥轨+指令条+时间直方图+结果表；手写组件，无 UI 框架/无 router/无状态管理库）
 cmd/logscan-bench/  性能验收基准
 cmd/stress-bench/   20GB 压力基准（双模式，全环节耗时+内存采样）
 tools/              辅助工具（纯 Go，不进产物）：genicon 图标生成 / packzip 跨平台压缩（发版脚本用）
@@ -49,7 +50,7 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 1. **查询与结果构建分离**：查询只收集命中偏移；预览文本由前端按窗口经 `GetResults(offset, limit)` 惰性拉取。不要在查询阶段构建结果文本。
 2. **元数据索引而非全文索引**：时间/级别走内存索引（偏移/时间戳/级别平行数组，17B/行）直查；无时间条件才并行全扫。级别计数/最长行在 `buildIndex` 顺带预计算——**不要在查询期重扫全行算统计**。
 3. **结果三态**（session.mode）：`modeQuery`（条件查询物化）/ `modeBrowseVirtual`（无条件+平铺的全览**零物化**——不存结果数组，GetResults 按前缀和二分从索引现翻译，永不截断）/ `modeBrowseMat`（全览切合并时按需物化）。零物化的翻译与排序 key 计算都依赖「结果按文件连续、行号升序」的平铺序假设——破坏该假设的改动会引入错乱。
-4. **时间锚点继承是统一语义**：无时间戳的行（堆栈/SQL 续行）向前继承同文件上一条非零时间戳——`filterCandidates` 的时间筛选与 `sortMerged` 的排序 key 用同一规则，两处必须一起改。锚点扫描必须「进度/锚点双指针」（进度每行无条件推进）——只在遇非零时推进会遇大段无时间区退化成每行重扫（实测 782 亿次内层扫描、46.5s 卡死）。
+4. **时间锚点继承是统一语义**：无时间戳的行（堆栈/SQL 续行）向前继承同文件上一条非零时间戳——该规则有**四处同源实现**（`filterCandidates` 筛选、`sortMerged` 排序 key、直方图聚合、`IndexByTime` 跳转定位），改语义必须四处一起改，详见 `.memory/anchor-inheritance.md`。锚点扫描必须「进度/锚点双指针」（进度每行无条件推进）——只在遇非零时推进会遇大段无时间区退化成每行重扫（实测 782 亿次内层扫描、46.5s 卡死）。
 5. **排序一律排索引 + 置换环**（`merge.go` 的 `permuteStable`）：`sort.Stable` 的 Swap 是整结构体交换（64B/次），百万级数据慢一个数量级；置换环应用时注意 order 是「位置→原下标」语义、循环需要其逆置换。`groupedRead` 保证合并序下窗口按 (FileID,Offset) 分组顺序读（防随机 IO），平铺序下是稳定 no-op。
 6. **分块并行读**：16MB 块、块边界对齐换行；候选行访问用顺序读游标 + 缓冲池，无随机 IO；`buildIndex` 合并期逐块释放块结果（防双份 GB 级并存）；多文件加载 4 路并行、完成后按拖入序重排。
 7. **内存治理**：结果上限按物理内存自适应（`resultlimit.go`，200 万保底~2000 万封顶）；大结果被小结果替换时延迟 1s 异步 `debug.FreeOSMemory`（立刻跑会把全局 STW 计入紧邻查询）；**禁止 `debug.SetMemoryLimit`**——软上限让 GC 满负荷，20GB 全扫实测 7.8s→25s（反例已记入 design.md）。
@@ -57,6 +58,7 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 9. **防御上限**：单行显示 64KB 截断（`capLine`）；zip 解压总量按物理内存自适应（`calcMaxUnzipBytes`：8GB 保底~128GB 封顶）；**复制整行走后端**（`CopyLineText`/`CopyText` 直写系统剪贴板）——前端剪贴板 API（navigator.clipboard / 前端 ClipboardSetText）对大文本会截断，禁止前端自行写剪贴板。
 10. 正则一律 Go RE2（`regexp` 标准库），天然免疫灾难性回溯——禁止引入第三方正则库。
 11. **zip 解压零残留**：解压产物落 `%TEMP%\log-hunter-unzip-*`（每 zip 一子目录），`RemoveFile` 清零引用删子目录并同步清去重登记（删光后重拖可加载）、`ClearAll`/退出删根目录（失败重试 3 次）；崩溃残留由启动 `SweepStaleTemp` 清扫（目录年龄 >1h + 锁文件探针双护栏防误删活实例，幂等重试）；二进制判定用内容（前 16KB 含 NUL）**不是扩展名**——轮转命名的日志（`.log.101`）必须能收；嵌套 zip 按内容魔数（PK 头）递归解压，限 3 层，解压总量上限（按物理内存自适应，8GB 保底~128GB 封顶）**会话累计共享**（含内层 scratch，单条目写盘按剩余预算 CopyN 硬限防炸弹），每层独立 zip-<seq> 子目录随移除隔离清理。
+12. **时间直方图惰性聚合**：桶聚合不进查询主路径（并入会把 2 亿行 0s 全览拖成秒级），查询完成后前端单独拉取、零物化路径按文件并行；锚点继承与第 4 条同源；组件 `watch([stats, merged])` 视图切换即重拉（全览切合并按上限截断，口径必须跟随）。设计细节与踩坑见 `.memory/time-histogram.md`。
 
 ## 编码约定
 

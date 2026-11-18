@@ -44,6 +44,11 @@ const items = ref<ChatItem[]>([])
 const busy = ref(false)
 // busy 持续时间（秒）——等待状态可视化：不只光标，动态图标 + 已持续秒数
 const busySec = ref(0)
+// 当前步号与首字等待（S4 等待可视化）：agentLoop 每步发 step 事件，
+// 首个 delta/reasoning/tool_call 到达即视为首字——慢在模型推理时用户知道它活着
+const stepNo = ref(0)
+const stepWait = ref(false)
+const stepWaitFrom = ref(0)
 let busyTimer: number | undefined
 function startBusyTimer() {
   busySec.value = 0
@@ -157,7 +162,16 @@ let flushTimer: number | undefined
 function applyEvt(e: { kind: string; text: string; detail: string }) {
   const cur = curStream()
   if (!cur) return
+  // 任何模型产出（正文/思考/工具调用）都视为首字到达
+  if (e.kind === 'delta' || e.kind === 'reasoning' || e.kind === 'tool_call') {
+    stepWait.value = false
+  }
   switch (e.kind) {
+    case 'step':
+      stepNo.value = parseInt(e.text, 10) || 0
+      stepWait.value = true
+      stepWaitFrom.value = busySec.value
+      break
     case 'delta':
       flushBuf.text += e.text
       scheduleFlush(cur)
@@ -169,16 +183,25 @@ function applyEvt(e: { kind: string; text: string; detail: string }) {
     case 'tool_call':
       cur.steps.push({ kind: 'call', text: e.text, detail: e.detail, done: false }); break
     case 'tool_result': {
-      // 配对到最近一个同名步骤卡：进度详情（开始读取/等待授权/已授权…）累进同一张卡，
-      // 不因 done 已置而另开新卡——一次 read_source 的时间线只占一行
-      for (let i = cur.steps.length - 1; i >= 0; i--) {
-        if (cur.steps[i].kind === 'call' && cur.steps[i].text === e.text) {
-          cur.steps[i].done = true
-          cur.steps[i].detail += '\n→ ' + e.detail
-          return
+      // FIFO 配对：工具按调用序执行、结果按序到达（并行批量同名调用是常态——
+      // 曾按「最近同名」配对，结果全堆到最后一张卡，前面的卡永远转圈）。
+      // 先配最早已发起未完成的同名步骤；全部已完成则为进度详情，累进最近同名卡
+      let idx = -1
+      for (let i = 0; i < cur.steps.length; i++) {
+        const st = cur.steps[i]
+        if (st.kind === 'call' && st.text === e.text && !st.done) { idx = i; break }
+      }
+      if (idx < 0) {
+        for (let i = cur.steps.length - 1; i >= 0; i--) {
+          if (cur.steps[i].kind === 'call' && cur.steps[i].text === e.text) { idx = i; break }
         }
       }
-      cur.steps.push({ kind: 'call', text: e.text, detail: '→ ' + e.detail, done: true })
+      if (idx >= 0) {
+        cur.steps[idx].done = true
+        cur.steps[idx].detail += '\n→ ' + e.detail
+      } else {
+        cur.steps.push({ kind: 'call', text: e.text, detail: '→ ' + e.detail, done: true })
+      }
       break
     }
     case 'doc': cur.steps.push({ kind: 'doc', text: e.text, detail: e.detail, done: true }); break
@@ -193,10 +216,11 @@ function scheduleFlush(cur: ChatItem) {
     if (flushBuf.reasoning) { cur.reasoning += flushBuf.reasoning; flushBuf.reasoning = '' }
   }, 50)
 }
-// 外部预填追问（右键「问 AI」）：填入输入框待用户编辑/发送，并聚焦
+// 外部预填追问（右键「问 AI」）：无条件填入输入框待用户编辑/发送，并聚焦。
+// 曾在会话进行中直接丢弃（busy 守卫）——内容带不过来只能停止后再点；
+// 输入框在会话中本就可编辑，发送环节自会挡住 busy（此时按钮是「停止」）
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 function prefill(text: string) {
-  if (busy.value) return
   inputText.value = text
   nextTick(() => inputEl.value?.focus())
 }
@@ -207,6 +231,8 @@ function pushAssistant() {
   applySeq.value = 0
   pendingEvts.clear()
   clearGapTimer()
+  stepNo.value = 0
+  stepWait.value = false
   items.value.push({ kind: 'assistant', text: '', reasoning: '', steps: [], streaming: true })
   stickBottom.value = true
 }
@@ -216,6 +242,8 @@ function finishStream(err?: string) {
   flushPendingSkipHoles()
   clearGapTimer()
   stopBusyTimer()
+  stepNo.value = 0
+  stepWait.value = false
   const arr = items.value
   for (let i = arr.length - 1; i >= 0; i--) {
     if (arr[i].kind === 'assistant' && arr[i].streaming) { arr[i].streaming = false; break }
@@ -223,6 +251,12 @@ function finishStream(err?: string) {
   // 阻塞授权下正常结束时不应有未决卡；仍有=本轮被停止/超时中断，标失效防可点残卡
   for (const it of arr) {
     if (it.auth && !it.auth.done) it.auth.done = '已失效（本轮已结束）'
+    // 步骤兜底：结果事件丢失/中断时未完成步骤不再永远转圈（含并行批量调用的错配容错）
+    if (it.steps) {
+      for (const st of it.steps) {
+        if (st.kind === 'call' && !st.done) st.done = true
+      }
+    }
   }
   if (err) items.value.push({ kind: 'error', text: err, reasoning: '', steps: [], streaming: false })
   busy.value = false
@@ -652,7 +686,8 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
           </div>
           <div v-if="busy && it.streaming" class="ai-wait-v2">
             <span class="ai-spinner"></span>
-            <span>正在分析</span>
+            <span>正在分析<template v-if="stepNo > 0"> · 第 {{ stepNo }} 步</template></span>
+            <span v-if="stepNo > 0 && stepWait && busySec > stepWaitFrom" class="ai-stepwait">等待首字 {{ busySec - stepWaitFrom }}秒</span>
             <span class="ai-elapsed" v-if="busySec > 0">{{ fmtElapsed(busySec) }}</span>
           </div>
 
@@ -861,6 +896,7 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
   background: var(--accent-soft);
   border-radius: 999px; padding: 1px 6px;
 }
+.ai-stepwait { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
 @keyframes ai-spin { to { transform: rotate(360deg); } }
 
 /* 用户消息 */

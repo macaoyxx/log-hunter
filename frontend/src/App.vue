@@ -62,6 +62,9 @@ const clusterReport = ref<logscan.ClusterReport | null>(null)
 const clustering = ref(false)
 const clusterProg = ref<{ done: number; total: number } | null>(null)
 const aiOpen = ref(false)
+// 面板首次打开后常驻（v-show 隐藏而非 v-if 销毁）：叉叉只藏不杀——items/busy/
+// 计时/事件流全部原样存活，关闭期间流式照常落位，重开即原样（数据永不丢）
+const aiMounted = ref(false)
 const aiSettingsOpen = ref(false)
 const aiConfig = ref<conf.Conf>(conf.Conf.createFrom({ profiles: [] }))
 const aiPanelRef = ref<InstanceType<typeof AiPanel> | null>(null)
@@ -496,6 +499,7 @@ function openCluster() {
 }
 // 聚类面板「AI 诊断」：打开专家侧栏；未配置任何厂商则引导先配置
 function openAiDiagnose() {
+  aiMounted.value = true
   aiOpen.value = true
   if (!aiConfig.value.profiles.length) aiSettingsOpen.value = true
 }
@@ -507,10 +511,12 @@ function openAiSettings() {
 // 打开 AI 面板（无数据也可直接贴日志/截图问——入口不依赖查询结果）
 function openAiPanel() {
   themePopRef.value?.close()
+  aiMounted.value = true
   aiOpen.value = true
 }
 // 右键「问 AI」：打开侧栏并预填追问文本（面板在途请求时不打扰）
 function onAskAi(text: string) {
+  aiMounted.value = true
   aiOpen.value = true
   nextTick(() => aiPanelRef.value?.prefill(text))
 }
@@ -609,7 +615,7 @@ function refreshAiConfig() {
         @ask-ai="onAskAi" />
     </div>
     <!-- AI 专家侧栏列（占布局非浮层：引用跳转时结果表仍可见） -->
-    <AiPanel v-if="aiOpen" ref="aiPanelRef" :config="aiConfig" :stats-total="stats?.total ?? 0"
+    <AiPanel v-if="aiMounted" v-show="aiOpen" ref="aiPanelRef" :config="aiConfig" :stats-total="stats?.total ?? 0"
       @close="aiOpen = false"
       @jump="(i: number) => resultTableRef?.jumpToIndex(i)"
       @open-context="openContext"

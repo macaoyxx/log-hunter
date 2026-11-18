@@ -13,7 +13,7 @@ export function AiDiagnose(arg1:string,arg2:string,arg3:string):Promise<main.AiR
 
 export function AiFollowup(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<main.AiReportOut>;
 
-export function AiPullModels(arg1:string):Promise<Array<conf.Model>>;
+export function AiPullModels(arg1:conf.Profile):Promise<Array<conf.Model>>;
 
 export function AiResetSession():Promise<void>;
 
@@ -83,6 +83,6 @@ export function SetThemeSettings(arg1:string,arg2:string):Promise<void>;
 
 export function StartUpdate():Promise<void>;
 
-export function TestAiConn(arg1:string,arg2:string):Promise<string>;
+export function TestAiConn(arg1:conf.Profile,arg2:string):Promise<string>;
 
 export function ValidateRegex(arg1:string):Promise<string>;

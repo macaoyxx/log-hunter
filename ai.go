@@ -130,12 +130,11 @@ func (a *App) SetAiConfig(c conf.Conf) error {
 	return a.aiConf.Set(c)
 }
 
-// AiPullModels 拉取端点模型列表 + 能力预填，合并进指定档案（同名已有条目保留用户值）
-// 并持久化，返回该档案合并后的模型列表
-func (a *App) AiPullModels(profileID string) ([]conf.Model, error) {
-	c := a.aiConf.Get()
-	p := c.FindProfile(profileID)
-	if p == nil || p.BaseURL == "" {
+// AiPullModels 从端点拉取模型列表 + 能力预填，合并进传入档案（同名已有条目保留用户值），
+// 返回合并后的模型列表。直接用传入的草稿档案（端点/密钥/已有模型）——不落盘：
+// 设置面板是草稿制，「拉取」不该把整个 draft 偷偷写进 ai.json（曾致「没点保存下次进来也存在了」）
+func (a *App) AiPullModels(p conf.Profile) ([]conf.Model, error) {
+	if p.BaseURL == "" {
 		return nil, fmt.Errorf("档案未配置端点地址")
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
@@ -145,11 +144,15 @@ func (a *App) AiPullModels(profileID string) ([]conf.Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 合并：已有条目原位保留，新名追加（预填能力）
+	// 合并：已有条目原位保留，新名追加（预填能力）。
+	// out 必须非 nil：空档案 + 空端点结果时 append(nil) 保持 nil → JSON null →
+	// 前端 p.models.length 直接崩（nil 切片→null 是本项目已知坑族）
 	have := make(map[string]bool, len(p.Models))
 	for _, m := range p.Models {
 		have[m.Name] = true
 	}
+	out := make([]conf.Model, 0, len(p.Models)+len(ids))
+	out = append(out, p.Models...)
 	for _, id := range ids {
 		if have[id] {
 			continue
@@ -160,25 +163,24 @@ func (a *App) AiPullModels(profileID string) ([]conf.Model, error) {
 		} else {
 			m.Vision = caps.Vision // 数字留空 = 全局默认
 		}
-		p.Models = append(p.Models, m)
+		out = append(out, m)
 	}
-	if err := a.aiConf.Set(c); err != nil {
-		return nil, err
-	}
-	return p.Models, nil
+	return out, nil
 }
 
-// TestAiConn 验证档案连通与鉴权：向指定模型发一条极小请求，返回模型回复
-func (a *App) TestAiConn(profileID, model string) (string, error) {
-	c := a.aiConf.Get()
-	ep, err := c.Endpoint(profileID)
-	if err != nil {
-		return "", err
+// TestAiConn 验证档案连通与鉴权：向指定模型发一条极小请求，返回模型回复。
+// 直接用传入草稿档案的端点/密钥——测的就是眼前所见，不再要求先保存
+func (a *App) TestAiConn(p conf.Profile, model string) (string, error) {
+	if p.BaseURL == "" {
+		return "", fmt.Errorf("档案未配置端点地址")
+	}
+	if model == "" {
+		return "", fmt.Errorf("未指定模型")
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
 	defer cancel()
-	out, err := client.NewClient(ep).ChatOnce(ctx, model,
-		[]client.Message{client.TextMessage("user", "回复两个字：正常")}, 16)
+	out, err := client.NewClient(client.Endpoint{BaseURL: p.BaseURL, APIKey: p.APIKey}).
+		ChatOnce(ctx, model, []client.Message{client.TextMessage("user", "回复两个字：正常")}, 16)
 	if err != nil {
 		return "", err
 	}

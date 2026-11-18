@@ -103,6 +103,28 @@ var clusterTool = client.ToolDefinition{
 	},
 }
 
+// readSourceTool 源码读取（内置实现，执行在 source.go）：日志堆栈指向代码时请求读源码；
+// 首次读取需用户授权（授权卡：允许并记住/仅本次/拒绝），拒绝后本会话不再询问
+var readSourceTool = Tool{
+	Def: client.ToolDefinition{
+		Type: "function",
+		Function: client.FunctionSpec{
+			Name:        "read_source",
+			Description: "读文件片段（源码/文档/配置等，日志堆栈指向的类、项目文档都算）。目录授权为整棵子树（授权一次全子树免问）。首次访问会向用户请求目录授权（reason 必填说明动机）；用户拒绝后本会话内不得再请求，应基于日志继续。yml/env/json/密钥类敏感文件每次读取均需单独授权（无记住选项），请一次读全所需行段减少打扰。引用文件用 文件名:行号。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":      map[string]any{"type": "string", "description": "源码文件绝对路径"},
+					"reason":    map[string]any{"type": "string", "description": "为什么需要读这个文件（展示给用户做授权决定）"},
+					"startLine": map[string]any{"type": "integer", "description": "起始行号（读取该行段±50行）"},
+					"endLine":   map[string]any{"type": "integer", "description": "结束行号"},
+				},
+				"required": []string{"path", "reason"},
+			},
+		},
+	},
+}
+
 // writeDocTool 受控产出（内置实现，schema 在此、执行在 Session.writeDoc）
 var writeDocTool = Tool{
 	Def: client.ToolDefinition{

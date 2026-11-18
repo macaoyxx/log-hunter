@@ -58,6 +58,10 @@ type Session struct {
 	reportDir string           // write_doc 落点（懒建）
 	BaseTotal int              // 诊断时结果集 stats.Total 快照（绑定层做失效检测）
 	cancel    context.CancelFunc
+
+	grantedDirs map[string]bool // 会话级源码授权目录（用户「仅本次允许」）
+	deniedDirs  map[string]bool // 会话内被拒目录（防授权骚扰：拒后不再询问）
+	deniedFiles map[string]bool // 会话内被拒敏感文件（yml/env/json 等，拒后不再询问）
 }
 
 // Snapshot 锁内快照（外部读唯一正道：Docs/BaseTotal/msgs 均有并发写方——
@@ -78,6 +82,9 @@ func (s *Session) Reset() {
 	s.Docs = nil
 	s.reportDir = ""
 	s.BaseTotal = 0
+	s.grantedDirs = nil
+	s.deniedDirs = nil
+	s.deniedFiles = nil
 }
 
 // Cancel 取消在途请求
@@ -136,6 +143,11 @@ type Diagnoser struct {
 	Now      func() time.Time // 注入时钟（测试；nil 用 time.Now）
 
 	seq atomic.Int64 // 事件序号（每轮入口重置；emit 内递增）
+
+	// AskAuth 源码读取授权征询（绑定层注入：弹授权卡并阻塞等用户回执；nil=无通道一律拒绝）。
+	// sensitive=true 为敏感文件逐次授权（授权卡无「记住」选项）。ctx 取消=用户停止，
+	// 返回空 AuthResult 且调用方按「取消」处理（不登记拒绝）
+	AskAuth func(ctx context.Context, target, reason string, sensitive bool) AuthResult
 }
 
 const (
@@ -331,6 +343,11 @@ func (d *Diagnoser) agentLoop(ctx context.Context, cl *client.Client, model, eff
 		s.msgs = append(s.msgs, msg)
 		s.mu.Unlock()
 		if len(msg.ToolCalls) == 0 {
+			if strings.TrimSpace(contentText(msg)) == "" {
+				// 空回复（无正文无工具调用）：网关偶发——静默当最终回复会让流无声停止，
+				// 用户无从分辨；报明确错误让红条可见，可重发推进
+				return "", fmt.Errorf("模型返回了空回复（无正文/无工具调用，可能是网关或模型异常），请重新发送或换模型重试")
+			}
 			return contentText(msg), nil // 最终回复
 		}
 		// 执行全部工具调用并回填（write_doc 内置实现，其余走注册表）
@@ -347,11 +364,11 @@ func (d *Diagnoser) agentLoop(ctx context.Context, cl *client.Client, model, eff
 
 // toolDefs 发给模型的工具 schema
 func (d *Diagnoser) toolDefs() []client.ToolDefinition {
-	defs := make([]client.ToolDefinition, 0, len(d.Tools)+1)
+	defs := make([]client.ToolDefinition, 0, len(d.Tools)+2)
 	for _, t := range d.Tools {
 		defs = append(defs, t.Def)
 	}
-	defs = append(defs, writeDocTool.Def) // write_doc 内置
+	defs = append(defs, writeDocTool.Def, readSourceTool.Def) // 内置：write_doc / read_source
 	return defs
 }
 
@@ -359,6 +376,9 @@ func (d *Diagnoser) toolDefs() []client.ToolDefinition {
 // 不中断循环——让模型看到错误自行调整）
 func (d *Diagnoser) execTool(ctx context.Context, s *Session, tc client.ToolCall) string {
 	name := tc.Function.Name
+	if name == readSourceTool.Def.Function.Name {
+		return d.readSourceExec(ctx, s, tc.Function.Arguments)
+	}
 	if name == writeDocTool.Def.Function.Name {
 		var args struct {
 			Filename string `json:"filename"`
@@ -387,7 +407,7 @@ func (d *Diagnoser) toolNames() string {
 	for _, t := range d.Tools {
 		names = append(names, t.Def.Function.Name)
 	}
-	names = append(names, writeDocTool.Def.Function.Name)
+	names = append(names, writeDocTool.Def.Function.Name, readSourceTool.Def.Function.Name)
 	return strings.Join(names, ", ")
 }
 

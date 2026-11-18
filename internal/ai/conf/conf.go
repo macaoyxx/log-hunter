@@ -54,6 +54,7 @@ type Conf struct {
 	Effort        string    `json:"effort,omitempty"`       // ""=不发 | low|medium|high
 	CtxTokens     int       `json:"ctxTokens,omitempty"`    // 全局默认窗口
 	MaxOutTokens  int       `json:"maxOutTokens,omitempty"` // 全局默认响应上限
+	GrantedDirs   []string  `json:"grantedDirs,omitempty"`  // 源码读取授权目录（用户「允许并记住」累计，设置里可移除）
 }
 
 // Store ai.json 读写。进程内低频调用，mu 防并发交叉写坏文件（照 appconf 范式）
@@ -148,6 +149,7 @@ func (s *Store) save() error {
 func (s *Store) confCopy() Conf {
 	c := s.c
 	c.Profiles = append([]Profile(nil), s.c.Profiles...)
+	c.GrantedDirs = append([]string(nil), s.c.GrantedDirs...)
 	for i := range c.Profiles {
 		c.Profiles[i].Models = append([]Model(nil), s.c.Profiles[i].Models...)
 	}
@@ -254,6 +256,20 @@ func itoa(n int) string {
 		return string(rune('0' + n))
 	}
 	return itoa(n/10) + string(rune('0'+n%10))
+}
+
+// GrantDir 追加一条持久授权目录（去重、路径规整）
+func (s *Store) GrantDir(dir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dir = filepath.Clean(dir)
+	for _, d := range s.c.GrantedDirs {
+		if d == dir {
+			return nil
+		}
+	}
+	s.c.GrantedDirs = append(s.c.GrantedDirs, dir)
+	return s.save()
 }
 
 // ---- 运行时取值（回落链：模型条目 → 全局默认）----

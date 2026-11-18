@@ -199,3 +199,37 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// find_files：授权目录内按名定位（片段/通配），未授权目录不搜不提示
+func TestFindFiles(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "src", "pay"), 0o755)
+	os.WriteFile(filepath.Join(root, "src", "pay", "PayService.java"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(root, "src", "pay", "PayTask.java"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(root, "README.md"), []byte("x"), 0o644)
+	// 未授权的兄弟目录：里面有另一个 Pay 文件，不该被找到
+	other := t.TempDir()
+	os.WriteFile(filepath.Join(other, "PayHidden.java"), []byte("x"), 0o644)
+
+	d := newAuthDiagnoser(t, []string{root})
+	s := &Session{}
+	out := d.findFilesExec(s, `{"pattern": "PayService"}`)
+	if !contains(out, "PayService.java") || contains(out, "PayTask.java") {
+		t.Fatalf("片段匹配应收窄到 PayService: %.200s", out)
+	}
+	if contains(out, "PayHidden.java") {
+		t.Fatal("未授权目录不应被搜索")
+	}
+	out = d.findFilesExec(s, `{"pattern": "*.java"}`)
+	if !contains(out, "PayService.java") || !contains(out, "PayTask.java") {
+		t.Fatalf("通配应命中两个 java: %.200s", out)
+	}
+	if contains(out, "README.md") {
+		t.Fatal("*.java 不应命中 md")
+	}
+	// 无授权目录时的引导话术
+	d2 := newAuthDiagnoser(t, nil)
+	if out := d2.findFilesExec(&Session{}, `{"pattern": "x"}`); !contains(out, "授权") {
+		t.Fatalf("无授权应引导先授权: %.100s", out)
+	}
+}

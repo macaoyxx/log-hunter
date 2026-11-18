@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,6 +182,94 @@ func (d *Diagnoser) readSourceExec(ctx context.Context, s *Session, args string)
 	}
 	return out.String()
 }
+
+// findFilesExec find_files 工具执行：在已授权目录（会话 + 持久）内按文件名匹配。
+// 安全边界：只搜授权范围（不扩权、不提示未授权目录的存在）——模型拿堆栈里的类名
+// 定位源码路径的配套工具，找到后仍走 read_source（含敏感文件逐次授权）
+func (d *Diagnoser) findFilesExec(s *Session, args string) string {
+	var p struct {
+		Pattern string `json:"pattern"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil {
+		return "参数错误: " + err.Error()
+	}
+	pat := strings.TrimSpace(p.Pattern)
+	if pat == "" {
+		return "缺少 pattern 参数"
+	}
+	// 授权根目录合并（会话集 + 持久集，去重；拒过的目录不搜）
+	var roots []string
+	seen := map[string]bool{}
+	s.mu.Lock()
+	for g := range s.grantedDirs {
+		if !seen[g] {
+			seen[g] = true
+			roots = append(roots, g)
+		}
+	}
+	s.mu.Unlock()
+	if d.Conf != nil {
+		for _, g := range d.Conf.Get().GrantedDirs {
+			if !seen[g] {
+				seen[g] = true
+				roots = append(roots, g)
+			}
+		}
+	}
+	if len(roots) == 0 {
+		return "尚无已授权目录——先 read_source 一个路径触发授权，授权后即可按名查找"
+	}
+	// 匹配语义：含通配符走 filepath.Match；纯片段按小写包含。剪枝跳过
+	// .git/node_modules/target 等大而无果目录（万级文件的工程毫秒级走完）
+	hasWild := strings.ContainsAny(pat, "*?")
+	lower := strings.ToLower(pat)
+	var hits []string
+	for _, root := range roots {
+		filepath.WalkDir(root, func(path string, de fs.DirEntry, err error) error {
+			if err != nil {
+				return nil // 不可读路径跳过（不中断整个查找）
+			}
+			if de.IsDir() {
+				if path != root {
+					n := de.Name()
+					if strings.HasPrefix(n, ".") || n == "node_modules" || n == "target" || n == "build" || n == "dist" {
+						return fs.SkipDir
+					}
+				}
+				return nil
+			}
+			name := de.Name()
+			ok := false
+			if hasWild {
+				// 通配分支两侧同 lower 再 Match——与片段分支的大小写不敏感语义一致
+				ok, _ = filepath.Match(lower, strings.ToLower(name))
+			} else {
+				ok = strings.Contains(strings.ToLower(name), lower)
+			}
+			if ok {
+				hits = append(hits, path)
+			}
+			return nil
+		})
+	}
+	if len(hits) == 0 {
+		return "授权目录内没有匹配 " + pat + " 的文件（可用 read_source 读目录清单确认结构）"
+	}
+	capped := len(hits) > findFilesCap
+	if capped {
+		hits = hits[:findFilesCap]
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "授权目录内匹配 %s 共 %d 个文件%s：\n", pat, len(hits), map[bool]string{true: "（达上限截断，请用更具体的片段）", false: ""}[capped])
+	for _, h := range hits {
+		out.WriteString(h)
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
+// findFilesCap find_files 返回路径数上限：定位工具不是清单工具
+const findFilesCap = 50
 
 // sensitiveFile 敏感文件判定：可能携带密钥/凭证的配置与凭据文件——
 // 目录授权不覆盖，逐文件逐次授权（从严：宁可多问一次，不可漏一个 key）

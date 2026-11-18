@@ -63,7 +63,7 @@ func newTestDiagnoser(t *testing.T, mainURL, visionURL string, visionModel strin
 	var events []Event
 	return &Diagnoser{
 		Conf:    store,
-		Tools:   Toolset(dummyTool("search"), nil, nil, nil, nil),
+		Tools:   Toolset(dummyTool("search"), nil, nil, nil, nil, nil, nil),
 		Emit:    func(e Event) { events = append(events, e) },
 		DataDir: dir,
 		Now:     func() time.Time { return time.Date(2026, 11, 17, 10, 0, 0, 0, time.Local) },

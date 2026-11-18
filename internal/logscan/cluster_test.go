@@ -3,6 +3,8 @@ package logscan
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -120,11 +122,11 @@ func TestSideQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("影子查询应命中 2 条: %d", len(rows))
+	if len(rows.Rows) != 2 || rows.Total != 2 || rows.Capped {
+		t.Fatalf("影子查询应命中 2 条: %+v", rows)
 	}
-	if rows[0].Text == "" || rows[0].File == "" || rows[0].LineNo != 1 {
-		t.Fatalf("影子行字段不完整: %+v", rows[0])
+	if rows.Rows[0].Text == "" || rows.Rows[0].File == "" || rows.Rows[0].LineNo != 1 {
+		t.Fatalf("影子行字段不完整: %+v", rows.Rows[0])
 	}
 
 	// 关键断言：影子查询后主结果集不变
@@ -146,8 +148,8 @@ func TestSideQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) > sideQueryMaxLimit {
-		t.Fatalf("limit 未钳制: %d", len(all))
+	if len(all.Rows) > sideQueryMaxLimit {
+		t.Fatalf("limit 未钳制: %d", len(all.Rows))
 	}
 }
 
@@ -178,5 +180,136 @@ func TestSideCluster(t *testing.T) {
 	}
 	if rep2.Participated != 6 || rep2.Sampled {
 		t.Fatalf("全量聚类应 6 行无采样: %+v", rep2)
+	}
+}
+
+// TestSideStack 异常块整块读取：主行+全部无时间戳续行一次给全，块后首行截断
+func TestSideStack(t *testing.T) {
+	content := `2024-01-15 10:23:45.001 ERROR [pay] payment failed
+	at com.example.Pay.call(Pay.java:42)
+	at com.example.Order.place(Order.java:100)
+Caused by: java.net.SocketTimeoutException: connect timed out
+	at java.base.NioSocketImpl.connect(NioSocketImpl.java:0)
+2024-01-15 10:23:46.002 INFO after stack
+`
+	s := newTestSession(t, content)
+	defer s.ClearAll()
+	name := s.Files()[0].Name
+	rows, err := s.SideStack(name, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("堆栈块应为 5 行（主行+4 续行），块后首行截断: %d", len(rows))
+	}
+	if rows[0].LineNo != 1 || rows[4].LineNo != 5 {
+		t.Fatalf("块行号应为 1..5: %d..%d", rows[0].LineNo, rows[4].LineNo)
+	}
+	if !strings.Contains(rows[1].Text, "Pay.call") || !strings.Contains(rows[3].Text, "Caused by") {
+		t.Fatalf("续行内容缺失: %+v", rows)
+	}
+	// 从续行（第 3 行）进入：应回溯到同一主行、返回同一块
+	rows2, err := s.SideStack(name, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows2) != 5 || rows2[0].LineNo != 1 {
+		t.Fatalf("从块内进入应定位同一块: %d 行起 %d", len(rows2), rows2[0].LineNo)
+	}
+}
+
+// TestSideFollowMerged 跨文件全链路：按标识拉全并按时间合并排序
+func TestSideFollowMerged(t *testing.T) {
+	app1 := `2024-01-15 10:00:01.000 INFO req=T100 start pay
+2024-01-15 10:00:03.000 INFO unrelated line
+2024-01-15 10:00:05.000 ERROR req=T100 pay failed
+`
+	app2 := `2024-01-15 10:00:00.500 INFO req=T100 gateway-in
+2024-01-15 10:00:04.000 WARN req=T100 slow 3.2s
+`
+	s := NewSession()
+	d := t.TempDir()
+	p1 := filepath.Join(d, "app1.log")
+	p2 := filepath.Join(d, "app2.log")
+	os.WriteFile(p1, []byte(app1), 0o644)
+	os.WriteFile(p2, []byte(app2), 0o644)
+	if _, errs, _ := s.AddFiles(context.Background(), []string{p1, p2}, nil); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	defer s.ClearAll()
+	rows, capped, err := s.SideFollow(context.Background(), "req=T100")
+	if err != nil || capped {
+		t.Fatalf("follow 失败/意外截断: %v %v", err, capped)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("应拉全 4 行: %d", len(rows))
+	}
+	// 合并时间序：0.5(gateway-in) < 1.0(start) < 4.0(slow) < 5.0(failed)
+	want := []string{"gateway-in", "start pay", "slow", "pay failed"}
+	for i, w := range want {
+		if !strings.Contains(rows[i].Text, w) {
+			t.Fatalf("第 %d 行应为「%s」: %+v", i, w, rows[i].Text)
+		}
+	}
+	if rows[0].File == rows[1].File {
+		t.Fatalf("跨文件合并失败: %s / %s", rows[0].File, rows[1].File)
+	}
+}
+
+// TestSideQueryTotal 命中总数口径：行按 limit 收、Total 全量计；超计数上限标 Capped
+func TestSideQueryTotal(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&b, "2024-01-15 10:00:%02d.000 INFO tick\n", i%60)
+	}
+	s := newTestSession(t, b.String())
+	defer s.ClearAll()
+	e := s.Files()[0]
+	res, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}, Keywords: []string{"tick"}}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rows) != 10 || res.Total != 60 || res.Capped {
+		t.Fatalf("应为 10 行/总数 60/未截断: rows=%d total=%d capped=%v", len(res.Rows), res.Total, res.Capped)
+	}
+
+	// 超 sideCountCap：Total 钳在 1000 并标 Capped
+	var big strings.Builder
+	for i := 0; i < 1100; i++ {
+		big.WriteString("2024-01-15 10:00:00.000 INFO tick\n")
+	}
+	s2 := newTestSession(t, big.String())
+	defer s2.ClearAll()
+	res2, err := s2.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{s2.Files()[0].ID}, Keywords: []string{"tick"}}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res2.Capped || res2.Total != sideCountCap || len(res2.Rows) != 10 {
+		t.Fatalf("超上限应钳 1000 并标 Capped: %+v", res2)
+	}
+}
+
+// TestFileIDsByNames 文件名→ID 解析：精确/基名/子串唯一命中，多义不猜
+func TestFileIDsByNames(t *testing.T) {
+	app := `2024-01-15 10:00:00.000 INFO ok
+`
+	s := newTestSession(t, app)
+	defer s.ClearAll()
+	name := s.Files()[0].Name
+	if ids, missed := s.FileIDsByNames([]string{name}); len(ids) != 1 || len(missed) != 0 {
+		t.Fatalf("精确名应命中: %v %v", ids, missed)
+	}
+	base := name
+	if i := strings.LastIndexByte(base, '\\'); i >= 0 {
+		base = base[i+1:]
+	}
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	if ids, _ := s.FileIDsByNames([]string{base}); len(ids) != 1 {
+		t.Fatalf("基名应命中: %v", ids)
+	}
+	if _, missed := s.FileIDsByNames([]string{"不存在"}); len(missed) != 1 {
+		t.Fatalf("未匹配名应报 missed: %v", missed)
 	}
 }

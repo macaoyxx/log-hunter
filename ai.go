@@ -223,10 +223,11 @@ func (a *App) AiDiagnose(profileID, model, effort string) (AiReportOut, error) {
 // AiFollowup 追问（可带图片 dataURL）；结果集变化（重查/切视图）后旧会话的行号引用
 // 已失准，直接拒绝并要求重新诊断
 func (a *App) AiFollowup(profileID, model, effort, text string, images []string) (AiReportOut, error) {
-	// 结果集变化校验：冷启动会话在 diag.Followup 内锚定基线后同样受检
-	//（BaseTotal==0 且无会话时 diag 层放行纯问答开局并设基线）
+	// 结果集变化校验：有基线（baseTotal>0）后旧 [行 N] 引用依赖该结果集，变化即拒；
+	// 冷启动会话（baseTotal==0，如拖文件夹分析源码开局）从未有过结果集引用——
+	// 结果集出现属「锚定」而非「变化」，放行并由 Followup 重锚基线
 	if _, baseTotal, msgs := a.aiSess.Snapshot(); len(msgs) > 0 || baseTotal != 0 {
-		if total := a.session.Stats().Total; total != baseTotal {
+		if total := a.session.Stats().Total; baseTotal != 0 && total != baseTotal {
 			return AiReportOut{}, fmt.Errorf("结果集已变化（%d → %d 行），旧引用会指错位置——请重新诊断", baseTotal, total)
 		}
 	}
@@ -304,19 +305,21 @@ func (a *App) collectBase() diag.Base {
 
 // ---------- 取证工具执行器（包装 logscan 影子查询，注入 diag）----------
 
-// aiToolset 构造五个只读取证工具（agent 循环经 diag 调用）
+// aiToolset 构造七个只读取证工具（agent 循环经 diag 调用）
 func (a *App) aiToolset() []diag.Tool {
-	return diag.Toolset(a.toolSearch, a.toolGetContext, a.toolGetLine, a.toolHistogram, a.toolCluster)
+	return diag.Toolset(a.toolSearch, a.toolGetContext, a.toolGetLine, a.toolHistogram, a.toolCluster,
+		a.toolGetStack, a.toolFollow)
 }
 
 func (a *App) toolSearch(ctx context.Context, args string) string {
 	var p struct {
-		Keyword   string `json:"keyword"`
-		Regex     string `json:"regex"`
-		Levels    []int8 `json:"levels"`
-		TimeStart string `json:"timeStart"`
-		TimeEnd   string `json:"timeEnd"`
-		Limit     int    `json:"limit"`
+		Keyword   string   `json:"keyword"`
+		Regex     string   `json:"regex"`
+		Levels    []int8   `json:"levels"`
+		TimeStart string   `json:"timeStart"`
+		TimeEnd   string   `json:"timeEnd"`
+		Limit     int      `json:"limit"`
+		Files     []string `json:"files"`
 	}
 	if err := json.Unmarshal([]byte(args), &p); err != nil {
 		return "参数错误: " + err.Error()
@@ -332,14 +335,78 @@ func (a *App) toolSearch(ctx context.Context, args string) string {
 	if err != nil {
 		return err.Error()
 	}
-	rows, err := a.session.SideQuery(ctx, &logscan.QuerySpec{
+	var fileIDs []int64
+	if len(p.Files) > 0 {
+		var missed []string
+		fileIDs, missed = a.session.FileIDsByNames(p.Files)
+		if len(fileIDs) == 0 {
+			return "指定的文件均未匹配：" + strings.Join(missed, "、")
+		}
+	}
+	res, err := a.session.SideQuery(ctx, &logscan.QuerySpec{
 		Keywords: strings.Fields(p.Keyword), Regex: p.Regex, Levels: p.Levels,
-		TSStart: start, TSEnd: end,
+		TSStart: start, TSEnd: end, FileIDs: fileIDs,
 	}, p.Limit)
 	if err != nil {
 		return "搜索失败: " + err.Error()
 	}
-	return formatSideRows(rows, p.Limit)
+	return formatSideRows(res)
+}
+
+// toolGetStack get_stack：异常块整块读取（一次替代多次 get_context 拼堆栈）
+func (a *App) toolGetStack(ctx context.Context, args string) string {
+	var p struct {
+		File string `json:"file"`
+		Line int64  `json:"line"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil {
+		return "参数错误: " + err.Error()
+	}
+	rows, err := a.session.SideStack(p.File, p.Line)
+	if err != nil {
+		return "读取失败: " + err.Error()
+	}
+	return formatSideRows(logscan.SideQueryResult{Rows: rows, Total: len(rows)})
+}
+
+// toolFollow follow：按关联标识跨文件全链路拉取（合并时间序 + 各文件命中数）
+func (a *App) toolFollow(ctx context.Context, args string) string {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil {
+		return "参数错误: " + err.Error()
+	}
+	rows, capped, err := a.session.SideFollow(ctx, p.ID)
+	if err != nil {
+		return "拉取失败: " + err.Error()
+	}
+	if len(rows) == 0 {
+		return "没有找到包含该标识的行（确认标识拼写；线程名/通用词可能太宽或根本不存在）"
+	}
+	cnt := map[string]int{}
+	var order []string
+	for _, r := range rows {
+		if cnt[r.File] == 0 {
+			order = append(order, r.File)
+		}
+		cnt[r.File]++
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "标识 %q 全链路 %d 行（合并时间序）", p.ID, len(rows))
+	if capped {
+		b.WriteString("，已达 500 行上限截断——标识太宽，请换更精确的值")
+	}
+	b.WriteString("。各文件命中：")
+	for i, f := range order {
+		if i > 0 {
+			b.WriteString("、")
+		}
+		fmt.Fprintf(&b, "%s×%d", f, cnt[f])
+	}
+	b.WriteString("\n")
+	writeSideRows(&b, rows) // 摘要头已报总数，行文直写（不再经 formatSideRows 重复一行「命中 N 条」）
+	return b.String()
 }
 
 func (a *App) toolGetContext(ctx context.Context, args string) string {
@@ -356,7 +423,7 @@ func (a *App) toolGetContext(ctx context.Context, args string) string {
 	if err != nil {
 		return "读取失败: " + err.Error()
 	}
-	return formatSideRows(rows, 0)
+	return formatSideRows(logscan.SideQueryResult{Rows: rows, Total: len(rows)})
 }
 
 func (a *App) toolGetLine(ctx context.Context, args string) string {
@@ -455,15 +522,27 @@ func parseAgentTime(s string) (int64, error) {
 	return 0, fmt.Errorf("无法解析时间: %q（格式 2024-01-15 10:23:45）", s)
 }
 
-// formatSideRows 影子查询结果 → 给模型的文本（文件名:行号 时间 [级别] 文本）
-func formatSideRows(rows []logscan.SideRow, limit int) string {
-	if len(rows) == 0 {
+// formatSideRows 影子查询结果 → 给模型的文本（命中总数口径 + 文件名:行号 时间 [级别] 文本）
+func formatSideRows(res logscan.SideQueryResult) string {
+	if len(res.Rows) == 0 {
 		return "没有命中（可放宽条件或换关键字）"
 	}
 	var b strings.Builder
-	if limit > 0 && len(rows) >= limit {
-		fmt.Fprintf(&b, "已返回前 %d 条（更多命中未展示，请用更精确的条件）：\n", len(rows))
+	switch {
+	case res.Capped:
+		fmt.Fprintf(&b, "命中 ≥%s 条，展示前 %d 条（规模大，请收窄条件或用 files 限定文件）：\n",
+			humanCount(int64(res.Total)), len(res.Rows))
+	case res.Total > len(res.Rows):
+		fmt.Fprintf(&b, "命中 %s 条，展示前 %d 条（更多请收窄条件）：\n",
+			humanCount(int64(res.Total)), len(res.Rows))
+	default:
+		fmt.Fprintf(&b, "命中 %s 条：\n", humanCount(int64(res.Total)))
 	}
+	writeSideRows(&b, res.Rows)
+	return b.String()
+}
+
+func writeSideRows(b *strings.Builder, rows []logscan.SideRow) {
 	for _, r := range rows {
 		ts := ""
 		if r.TS > 0 {
@@ -473,9 +552,8 @@ func formatSideRows(rows []logscan.SideRow, limit int) string {
 		if l := logscan.Level(r.Level); l >= 0 {
 			lv = "[" + l.String() + "] "
 		}
-		fmt.Fprintf(&b, "%s:%d %s%s%s\n", r.File, r.LineNo, ts, lv, r.Text)
+		fmt.Fprintf(b, "%s:%d %s%s%s\n", r.File, r.LineNo, ts, lv, r.Text)
 	}
-	return b.String()
 }
 
 func clipTool(s string, n int) string {

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -251,6 +252,14 @@ func (d *Diagnoser) Followup(ctx context.Context, s *Session, profileID, model, 
 		//（此前漏设导致 BaseTotal 恒 0，失效校验被永久绕开）
 		s.BaseTotal = resultTotal
 		s.mu.Unlock()
+	} else {
+		// 冷启动会话（拖文件夹分析源码开局等）中途出现结果集：重锚基线。
+		// 此前恒 0——绑定层把「结果集出现」误判为「变化」，后续全部追问被拒
+		s.mu.Lock()
+		if s.BaseTotal == 0 {
+			s.BaseTotal = resultTotal
+		}
+		s.mu.Unlock()
 	}
 
 	c := d.Conf.Get()
@@ -325,6 +334,9 @@ func (d *Diagnoser) agentLoop(ctx context.Context, cl *client.Client, model, eff
 			s.mu.Unlock()
 		}
 		send := s.trimHistory(budget) // 超预算截最早追问轮（轮边界安全）
+		// 步事件（等待可视化）：前端据此显示「第 N 步 · 等待首字 X 秒」，
+		// 首个 delta/reasoning 到达即切换——慢在模型推理时用户知道它活着
+		d.emit(Event{Kind: "step", Text: strconv.Itoa(step + 1)})
 		var stepErr error
 		msg, err := cl.ChatStream(ctx, model, send, d.toolDefs(), effort, maxOut, client.StreamCallbacks{
 			OnDelta:     func(t string) { d.emit(Event{Kind: "delta", Text: t}) },
@@ -364,11 +376,11 @@ func (d *Diagnoser) agentLoop(ctx context.Context, cl *client.Client, model, eff
 
 // toolDefs 发给模型的工具 schema
 func (d *Diagnoser) toolDefs() []client.ToolDefinition {
-	defs := make([]client.ToolDefinition, 0, len(d.Tools)+2)
+	defs := make([]client.ToolDefinition, 0, len(d.Tools)+3)
 	for _, t := range d.Tools {
 		defs = append(defs, t.Def)
 	}
-	defs = append(defs, writeDocTool.Def, readSourceTool.Def) // 内置：write_doc / read_source
+	defs = append(defs, writeDocTool.Def, readSourceTool.Def, findFilesTool.Def) // 内置：write_doc / read_source / find_files
 	return defs
 }
 
@@ -378,6 +390,9 @@ func (d *Diagnoser) execTool(ctx context.Context, s *Session, tc client.ToolCall
 	name := tc.Function.Name
 	if name == readSourceTool.Def.Function.Name {
 		return d.readSourceExec(ctx, s, tc.Function.Arguments)
+	}
+	if name == findFilesTool.Def.Function.Name {
+		return d.findFilesExec(s, tc.Function.Arguments)
 	}
 	if name == writeDocTool.Def.Function.Name {
 		var args struct {
@@ -407,7 +422,7 @@ func (d *Diagnoser) toolNames() string {
 	for _, t := range d.Tools {
 		names = append(names, t.Def.Function.Name)
 	}
-	names = append(names, writeDocTool.Def.Function.Name, readSourceTool.Def.Function.Name)
+	names = append(names, writeDocTool.Def.Function.Name, readSourceTool.Def.Function.Name, findFilesTool.Def.Function.Name)
 	return strings.Join(names, ", ")
 }
 

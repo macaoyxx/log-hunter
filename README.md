@@ -7,27 +7,23 @@
 拖拽多个日志文件（支持 GB 级），关键字 / 正则 / 时间范围 / 级别组合查询快速定位问题。
 纯本地运行 · 索引全内存 · 不落盘 · 零残留
 
-[下载最新版](https://github.com/macaoyxx/log-hunter/releases/latest) · [为什么快](#为什么用-loghunter) · [操作演示](#操作演示)
+[下载最新版](https://github.com/macaoyxx/log-hunter/releases/latest) · [为什么快](#为什么用-loghunter) · [AI 诊断](#错误聚类与-ai-诊断)
 
 ![首页](docs/assets/product/home.png)
 
 </div>
 
-## 操作演示
+## 错误聚类与 AI 诊断
 
-<p>
-  <picture>
-    <source srcset="docs/assets/product/demo.png" media="(prefers-reduced-motion: reduce)">
-    <img src="docs/assets/product/demo.gif" alt="操作演示（约 3.3MB，加载中请稍候）" loading="lazy">
-  </picture>
-</p>
-<sub>△ 演示动图约 3.3 MB，弱网加载需数秒——空白即正在加载</sub>
+**本地错误聚类**（无 AI、确定性）：一键把当前结果集按行模板归一分组——「错误有几种、各多少条、代表行长什么样」一眼看清，点组/样本行直接跳回结果表。
 
-## 上下文详情
+**内置日志分析专家**（opt-in）：配置任意 OpenAI 兼容端点（DeepSeek / GLM / Ollama / 自建网关，主对话与视觉模型可跨厂商组合）后，专家基于聚类摘要自主取证（搜索/读上下文/看时间分布），给出带行号引用的根因假设——引用可点击回查、取证过程可见、**不瞎编**。多轮追问、贴图（视觉模型转述可核对）、拖入文件/文件夹作路径附件（AI 读源码需你的授权，敏感文件逐次确认）。
 
-双击任意行查看前后上下文，目标行自动居中高亮，支持 5 色格式标记：
+![AI 诊断](docs/assets/product/ai.png)
 
-![详情面板](docs/assets/product/context.png)
+厂商与模型能力（上下文窗口 / 视觉 / 响应上限）在设置中管理，拉取模型自动预填能力表；会话顶栏随时切换厂商/模型/思考等级续聊：
+
+![AI 设置](docs/assets/product/ai-setting.png)
 
 ## 为什么用 LogHunter
 
@@ -78,6 +74,16 @@
 
 - **应用内自动更新**：菜单检查到新版本后可一键「自动更新」——确认弹框 → 下载（进度条）→ sha256 完整性校验 → 自动替换本程序 → 选择立即/稍后重启；也可随时手动下载发布包（历史版本无校验文件时自动跳过校验，兼容过渡）
 - **启动即就绪**：隐藏启动消除空窗期（界面就绪才显示窗口）；启动耗时埋点写 `data/startup.log`（关于弹窗可见），供排查慢启动（未签名 exe 可能被杀毒实时扫描拖慢，可加排除项）
+
+### 错误聚类
+- **本地聚类**（无 AI、确定性）：当前结果集按行模板归一分组（时间戳/数字/GUID/IP → 占位符），组列表展示模板/计数/级别/时间范围/占比；点组或样本行跳转联动结果表；>10 万行均匀采样并标注口径
+
+### AI 诊断（opt-in）
+- **内置日志分析专家（自主 Agent）**：专家 system prompt 内置证据纪律——根因假设按置信度排序（附支持/反对证据），全程【事实】【推断】【待验证】三态标注；引用双口径可校验：`[行 N]` 跳结果表、`[文件名:行号]` 开上下文面板，编造的引用越界标红
+- **自主取证**（function calling 循环，只读影子查询不破坏你的结果集）：search / get_context / get_line / histogram / cluster；取证时间线默认收起、进行中步骤动态可辨，展开看每步参数与返回
+- **源码读取授权（human-in-the-loop）**：AI 请求读源码/文档时弹授权卡（允许并记住 / 仅本次 / 拒绝，目录授权整棵子树有效）；yml/env/json/密钥类敏感文件逐文件逐次授权；拖入文件/文件夹到输入框 = 路径附件（不进左侧日志列表）
+- **多厂商档案 + 会话内切模型**：N 个 OpenAI 兼容端点档案，主对话与视觉模型跨厂商组合；模型级 ctx/vision/maxOut 能力配置（常见模型自动预填）；会话顶栏随时切换续聊；贴图走视觉模型转述（只忠实提取、转述可折叠核对）
+- **产出受控**：write_doc 仅在明确要求时落本次会话报告目录；AI 配置存独立 data/ai.json，不配置不启用，纯本地产品定位不变
 
 ### 界面
 - **昼夜主题**：右上角 🌗/☀️/🌙 三态切换——自动（跟随系统，默认并记忆选择）/ 日间（暖白纸感）/ 夜巡（碳黑观测台）；切换 250ms 背光过渡，窗框颜色随系统；表面四级层级 + 信号色板，浮层与徽章在两主题下均清晰可辨
@@ -139,8 +145,12 @@ frontend/src/              Vue 3 界面
 ├── QueryBar.vue           搜索框+筛选链+高级条件+正则模板库+历史+时间快捷段
 ├── ResultTable.vue        表头+单行横向滚动+虚拟滚动（槽位复用）+分段+逐条导航
 ├── ContextPanel.vue       右侧上下文面板（全文、高亮、复制本行/全部、目标居中）
+├── ClusterPanel.vue       错误聚类面板（模板分组/占比/跳转联动）
+├── AiPanel.vue            AI 专家会话面板（流式/取证时间线/授权卡/追问）
+├── AiSettings.vue         AI 设置（厂商主从双栏/模型能力/目录授权）
 ├── HighlightText.vue      分段高亮组件（防 HTML 注入）
 └── TimePicker.vue         自绘日期时间选择器
+internal/ai/               AI 诊断（纯库分层：client 协议 / conf 配置 / diag 编排）
 cmd/logscan-bench/         性能验收基准（生成 1GB 混合日志并计时）
 cmd/stress-bench/          压力基准（20GB 双模式：单文件/10 文件，全环节耗时+内存采样）
 tools/packzip/             跨平台 zip 压缩工具（发版脚本用，Go 标准库）
@@ -166,7 +176,7 @@ wails dev                # 开发模式（热更新）
 go test ./internal/...   # 核心包单测
 go run ./cmd/logscan-bench -size 1024   # 性能基准（生成 1GB 日志并计时）
 go run ./cmd/stress-bench -mode multi   # 压力基准（20GB 双模式，耗时+内存采样）
-go run ./tools/genicon   # 重新生成应用图标（build/appicon.png + icon.ico）
+go run ./tools/genicon   # 重新生成应用图标（build/appicon.png + icon.ico + frontend 资产同源）
 ./scripts/package.sh 0.0.5   # 仅本地打包（release/<版本>/ 下产出 zip，临时文件自动清理）
 ./scripts/publish.sh 0.0.5   # 发布：先本地打包，确认后推 tag + GitHub Release（需 gh CLI，未装则给手动上传指引）
 ```

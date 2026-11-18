@@ -307,6 +307,13 @@ function liveProbe(it: ChatItem): string {
   }
   return ''
 }
+// capRunning 收起摘要行上最新一步是否进行中：live 文案转 accent 色与完成态区分
+function capRunning(it: ChatItem): boolean {
+  for (let i = it.steps.length - 1; i >= 0; i--) {
+    if (it.steps[i].kind !== 'doc') return it.steps[i].kind === 'call' && !it.steps[i].done
+  }
+  return false
+}
 
 // ---------- 引用 / 建议 ----------
 function validRow(n: number): boolean { return n >= 1 && n <= props.statsTotal }
@@ -611,23 +618,25 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
             <pre>{{ it.reasoning }}</pre>
           </details>
           <!-- 取证时间线：默认收起为一行摘要（步数 + 最新动作实时跳动），点击展开；
-               产出文档卡是交付物不随收起隐藏 -->
+               产出文档卡是交付物不随收起隐藏。收起行与步骤行同构同距（图标列严格对齐）；
+               进行中的步骤：图标转 accent 色 + 旋转 spinner（与完成态 ✓ 一眼区分） -->
           <div v-if="it.steps.length" class="ai-steps">
             <div v-if="probeCount(it)" class="steps-cap" :class="{ open: it.stepsOpen }" @click="it.stepsOpen = !it.stepsOpen">
               <AppIcon name="terminal" :size="11" />
               <span class="cap-n">取证 {{ probeCount(it) }} 步</span>
-              <span class="cap-live">{{ liveProbe(it) }}</span>
+              <span class="cap-live" :class="{ run: capRunning(it) }">{{ liveProbe(it) }}</span>
               <span class="cap-chev">{{ it.stepsOpen ? '收起' : '展开' }}</span>
             </div>
-            <div v-show="it.stepsOpen || st.kind === 'doc'" v-for="(st, si) in it.steps" :key="si" class="step" :class="'step-' + st.kind">
-              <i class="dot"></i>
+            <div v-show="it.stepsOpen || st.kind === 'doc'" v-for="(st, si) in it.steps" :key="si" class="step" :class="['step-' + st.kind, { run: st.kind === 'call' && !st.done }]">
               <div class="st-body">
                 <div class="st-line">
-                  <AppIcon v-if="st.kind === 'call'" name="terminal" :size="10" />
-                  <AppIcon v-else-if="st.kind === 'doc'" name="file-text" :size="10" />
-                  <AppIcon v-else name="image" :size="10" />
+                  <span class="st-ic">
+                    <AppIcon v-if="st.kind === 'call'" name="terminal" :size="11" />
+                    <AppIcon v-else-if="st.kind === 'doc'" name="file-text" :size="11" />
+                    <AppIcon v-else name="image" :size="11" />
+                  </span>
                   <span class="st-name">{{ st.text }}</span>
-                  <span v-if="st.kind === 'call' && !st.done" class="st-run">取证中…</span>
+                  <span v-if="st.kind === 'call' && !st.done" class="st-spin" title="取证中"></span>
                   <span v-else class="st-ok">✓</span>
                 </div>
                 <details v-if="st.detail" class="st-detail">
@@ -674,14 +683,14 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
           :disabled="busy" @click="pickImages"><AppIcon name="image" :size="14" /></button>
         <input ref="filePick" type="file" accept="image/*" multiple hidden @change="onPicked" />
         <textarea ref="inputEl" v-model="inputText" class="in-text" rows="2"
-          placeholder="追问（Enter 发送 · Shift+Enter 换行 · Ctrl+V 粘贴截图 · 拖入文件/文件夹=路径附件，AI 经授权读取）"
+          placeholder="追问（Enter 发送 · Shift+Enter 换行）"
           :disabled="!activeModel" @keydown="onKey" @paste="onPaste"></textarea>
         <button v-if="!busy" class="in-send" :disabled="(!inputText.trim() && !inputAtt.length) || !activeModel" title="发送" @click="send">
           <AppIcon name="send" :size="13" />
         </button>
         <button v-else class="in-stop" title="停止分析" @click="stop">停止</button>
       </div>
-      <div class="in-note">{{ ctxNote }} · 引用 [行 N] 可点回结果表核验 · 产出文档见取证时间线</div>
+      <div class="in-note">{{ ctxNote }} · Ctrl+V 贴图 · 拖入文件/文件夹 = 路径附件（AI 经授权读取）</div>
     </div>
   </div>
 </template>
@@ -899,19 +908,20 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
   overflow-y: auto;
 }
 
-/* 取证时间线：左竖线 + 节点圆点（取证 accent / 产出 ok / 视觉 indigo 走 accent-soft） */
-.steps-cap { /* 收起态摘要行：步数 + 最新动作，点击展开 */
-  display: flex; align-items: center; gap: 6px;
-  padding: 3px 10px; margin: 2px 0 4px;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg-elev); cursor: pointer; user-select: none;
-  font-size: 10.5px; color: var(--text-dim);
+/* 取证时间线：收起摘要行与步骤行同构（同 padding 同图标列——严格对齐，不再错位） */
+.steps-cap { /* 收起态摘要行：步数 + 最新动作，点击展开（无底板，与步骤行共一条左边线） */
+  display: flex; align-items: center; gap: 5px;
+  margin: 2px 0 4px; padding: 2px 0;
+  font-family: var(--mono); font-size: 10.5px; color: var(--text-dim);
+  cursor: pointer; user-select: none;
 }
-.steps-cap:hover { color: var(--text); border-color: var(--accent-line); }
+.steps-cap:hover { color: var(--text); }
 .steps-cap.open { margin-bottom: 6px; }
+.steps-cap :deep(svg) { color: var(--text-faint); }
 .steps-cap .cap-n { flex: none; color: var(--text); font-weight: 600; }
-.steps-cap .cap-live { flex: 1; min-width: 0; font-family: var(--mono); font-size: 10px;
-  color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps-cap .cap-live { flex: 1; min-width: 0; font-size: 10px; color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps-cap .cap-live.run { color: var(--accent-strong); }
 .steps-cap .cap-chev { flex: none; color: var(--text-faint); }
 .ai-steps {
   display: flex;
@@ -919,52 +929,66 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
   gap: 0;
   padding-left: 2px;
 }
-.step {
-  position: relative;
-  display: flex;
-  gap: 8px;
-  padding: 2px 0 2px 0;
+/* 步骤行卡（层次：摘要行=元信息 / 行卡=条目 / 详情=条目内嵌套，三级递进） */
+.step { margin: 3px 0; }
+.st-body {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
 }
-.step::before { /* 时间线竖线 */
-  content: '';
-  position: absolute;
-  left: 4px;
-  top: 14px;
-  bottom: -4px;
-  width: 1px;
-  background: var(--border);
-}
-.step:last-child::before { display: none; }
-.step .dot {
-  flex: none;
-  width: 9px;
-  height: 9px;
-  margin-top: 4px;
-  border-radius: 50%;
-  z-index: 1;
-}
-.step-call .dot { background: var(--accent-strong); }
-.step-doc .dot { background: var(--ok); }
-.step-vision .dot { background: var(--lvl-2-fg); }
-.st-body { flex: 1; min-width: 0; }
+.step.run .st-body { border-color: var(--accent-line); }
+.step-doc .st-body { border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
 .st-line {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 7px;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-dim);
 }
-.st-line :deep(svg) { color: var(--text-faint); }
-.step-doc .st-line { color: var(--ok); }
-.step-doc .st-line :deep(svg) { color: var(--ok); }
-.st-name { font-weight: 600; }
-.st-run { color: var(--accent-strong); }
-.st-ok { color: var(--ok); font-size: 10px; }
-.st-detail { font-size: 10.5px; }
-.st-detail summary { cursor: pointer; color: var(--text-faint); font-size: 10px; user-select: none; }
+/* 图标入位（圆角小方 chip）：视觉锚点替代此前被否掉的裸圆点 */
+.st-ic {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-faint);
+}
+.step-doc .st-ic { color: var(--ok); }
+.step.run .st-ic { color: var(--accent-strong); }
+.step.run .st-name { color: var(--accent-strong); }
+.st-name {
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0; /* flex 子项默认 min-width:auto 不收缩——缺它会溢出行卡 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 状态右置：完成 ✓ 绿 / 进行中 spinner 冰蓝（占位同一位置，动态一眼可辨） */
+.st-ok { margin-left: auto; flex: none; color: var(--ok); font-size: 10px; }
+.st-spin {
+  flex: none;
+  margin-left: auto;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--accent-soft);
+  border-top-color: var(--accent-strong);
+  border-radius: 50%;
+  animation: st-spin .8s linear infinite;
+}
+@keyframes st-spin { to { transform: rotate(360deg); } }
+/* 详情：缩进到名称列正下方（层次从属），轻链接式摘要 */
+.st-detail { margin: 3px 0 1px 27px; font-size: 10.5px; }
+.st-detail summary { cursor: pointer; color: var(--text-faint); font-size: 10px; user-select: none; width: fit-content; }
+.st-detail summary:hover { color: var(--accent-strong); }
 .st-detail pre {
-  margin-top: 2px;
+  margin-top: 4px;
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1.5;
@@ -973,10 +997,25 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
   word-break: break-word;
   max-height: 140px;
   overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
 /* markdown 正文与 chip（aiMd.ts 生成的类，经 :deep 落样式） */
-.ai-md { font-size: 12px; line-height: 1.65; color: var(--text); min-width: 0; }
+/* 报告面板化（方向A）：正文结论是「产出物」，给面板底+边框+顶缘微光，与取证时间线分层 */
+.ai-md {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text);
+  min-width: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  box-shadow: var(--sheen);
+}
 .ai-md :deep(.md-h) {
   font-size: 12.5px;
   font-weight: 600;

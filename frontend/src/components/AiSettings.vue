@@ -3,10 +3,10 @@
 // 模型能力三属性（ctx 窗口 / vision 视觉 / maxOut 响应上限）行内编辑、
 // 主/视觉厂商默认选择（跨厂商组合）、思考等级与全局默认。
 // 编辑走本地 draft，显式保存；「拉取模型/测试连接」操作已保存厂商（点击时先静默保存 draft）
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 import { conf } from '../../wailsjs/go/models'
-import { AiPullModels, SetAiConfig, TestAiConn } from '../../wailsjs/go/main/App'
+import { AiPullModels, GetAiConfig, SetAiConfig, TestAiConn } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{ config: conf.Conf }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved'): void }>()
@@ -21,6 +21,13 @@ function cloneConf(c: conf.Conf): conf.Conf {
   return out
 }
 const draft = ref(cloneConf(props.config))
+// 打开时重拉最新：授权目录在后端直接写盘（诊断中点「允许并记住」），props.config 是
+// App 层旧快照，不重拉会出现「明明记住了却显示暂无授权」
+onMounted(() => {
+  GetAiConfig().then((c: conf.Conf) => {
+    if (c.profiles) draft.value = cloneConf(c)
+  }).catch(() => {})
+})
 const saving = ref(false)
 const saveErr = ref('')
 const pullState = ref<Record<string, string>>({}) // 厂商 id → 拉取状态
@@ -29,12 +36,16 @@ const testState = ref<Record<string, string>>({}) // 厂商 id → 测试结果
 const expanded = ref<string | null>(draft.value.profiles[0]?.id ?? null)
 
 function addProfile() {
+  // 新增即分配不冲突 id（与后端 Normalize 的 p<N> 规则一致）：拉取/测试会先静默保存
+  // 再按 id 找档案，id 为空时后端补了新 id 而前端还拿着空串，必报「档案未配置端点」
+  let n = draft.value.profiles.length + 1
+  while (draft.value.profiles.some(p => p.id === 'p' + n)) n++
   const p = conf.Profile.createFrom({
-    id: '', name: '新厂商 ' + (draft.value.profiles.length + 1),
+    id: 'p' + n, name: '新厂商 ' + (draft.value.profiles.length + 1),
     baseUrl: '', apiKey: '', models: [],
   })
   draft.value.profiles.push(p)
-  expanded.value = p.id || 'new-' + draft.value.profiles.length
+  expanded.value = p.id
 }
 function removeProfile(i: number) {
   const p = draft.value.profiles[i]
@@ -89,6 +100,13 @@ async function testConn(p: conf.Profile) {
   }
 }
 
+// 授权目录与其他配置同为草稿制：删除/清空只改草稿，点「保存」随 SetAiConfig 一并生效
+function clearAllGrants() {
+  draft.value.grantedDirs = []
+}
+function removeGrant(g: string) {
+  draft.value.grantedDirs = (draft.value.grantedDirs ?? []).filter(x => x !== g)
+}
 const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型（select 不能嵌套）
   const out: { id: string; label: string; name: string }[] = []
   for (const p of draft.value.profiles) {
@@ -111,13 +129,13 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
       <div class="st-body">
         <!-- 厂商列表 -->
         <div class="st-sec">模型厂商（OpenAI 兼容：DeepSeek / GLM / Ollama /v1 / 自建网关）</div>
-        <div v-for="(p, pi) in draft.profiles" :key="pi" class="st-card" :class="{ open: expanded === (p.id || 'new-' + (pi + 1)) }">
-          <button class="st-card-head" @click="expanded = expanded === (p.id || 'new-' + (pi + 1)) ? null : (p.id || 'new-' + (pi + 1))">
-            <AppIcon name="chevron-right" :size="12" class="st-exp" :class="{ flip: expanded === (p.id || 'new-' + (pi + 1)) }" />
+        <div v-for="(p, pi) in draft.profiles" :key="pi" class="st-card" :class="{ open: expanded === p.id }">
+          <button class="st-card-head" @click="expanded = expanded === p.id ? null : p.id">
+            <AppIcon name="chevron-right" :size="12" class="st-exp" :class="{ flip: expanded === p.id }" />
             <input v-model="p.name" class="st-name" placeholder="厂商名（如 DeepSeek）" @click.stop />
             <span class="st-meta">{{ p.baseUrl || '未配置地址' }} · {{ p.models.length }} 模型</span>
           </button>
-          <div v-if="expanded === (p.id || 'new-' + (pi + 1))" class="st-card-body" @click.stop>
+          <div v-if="expanded === p.id" class="st-card-body" @click.stop>
             <div class="st-grid">
               <label class="st-field span2">
                 <span>Base URL</span>
@@ -200,6 +218,16 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
             </div>
           </label>
         </div>
+        <div class="st-sec">目录访问授权（AI 诊断时授予的目录，整棵子树有效）
+          <button v-if="draft.grantedDirs?.length" class="st-clear-all danger" @click="clearAllGrants">一键清空</button>
+        </div>
+        <div v-if="draft.grantedDirs?.length" class="st-grants">
+          <div v-for="g in [...draft.grantedDirs]" :key="g" class="st-grant">
+            <span class="st-grant-p" :title="g">{{ g }}</span>
+            <button class="st-grant-x" title="移除授权" @click="removeGrant(g)"><AppIcon name="x" :size="10" /></button>
+          </div>
+        </div>
+        <div v-else class="st-grants-empty">暂无持久授权（诊断中点「允许并记住」会出现在这里）</div>
         <div class="st-note">配置存 exe 同级 data/ai.json（明文，独立于 config.json）；模型级能力优先生效，留空回落全局默认。</div>
       </div>
 
@@ -347,6 +375,13 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
 .st-add { font-size: 11.5px; padding: 4px 10px; color: var(--text-dim); }
 .st-add:hover { color: var(--accent-strong); border-color: var(--accent-line); }
 
+.st-clear-all { margin-left: auto; font-size: 10px; padding: 1px 8px; }
+.st-grants { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+.st-grant { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px 6px 3px 10px; }
+.st-grant-p { flex: 1; min-width: 0; font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-grant-x { flex: none; width: 20px; height: 20px; padding: 0; justify-content: center; color: var(--text-faint); }
+.st-grant-x:hover { color: var(--danger); border-color: var(--danger); }
+.st-grants-empty { font-size: 11px; color: var(--text-faint); padding: 4px 2px 8px; }
 .st-note {
   margin-top: 10px;
   padding-top: 9px;

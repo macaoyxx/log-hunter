@@ -7,7 +7,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import { renderMd } from './aiMd'
 import { conf, logscan } from '../../wailsjs/go/models'
-import { AiDiagnose, AiFollowup, CancelAi, AiResolveRef, AiSessionInfo } from '../../wailsjs/go/main/App'
+import { AiDiagnose, AiFollowup, AiResetSession, CancelAi, AiAuthRespond, AiResolveRef, AiSessionInfo } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
   config: conf.Conf
@@ -33,17 +33,39 @@ interface ChatItem {
   text: string
   reasoning: string
   images?: string[] // 图片 dataURL（展示用）
-  atts?: { name: string; size: number; kind: 'image' | 'text' }[] // 附件摘要（展示用）
+  atts?: { name: string; size: number; kind: 'image' | 'text' | 'path' }[] // 附件摘要（展示用）
+  auth?: { id: string; path: string; reason: string; sensitive: boolean; done: string } // 授权卡（done: '' | 允许并记住 | 仅本次 | 已拒绝/超时）
   steps: Step[]
+  stepsOpen?: boolean // 取证时间线展开态；缺省收起（一行摘要，点击展开）
   streaming: boolean
 }
 
 const items = ref<ChatItem[]>([])
 const busy = ref(false)
+// busy 持续时间（秒）——等待状态可视化：不只光标，动态图标 + 已持续秒数
+const busySec = ref(0)
+let busyTimer: number | undefined
+function startBusyTimer() {
+  busySec.value = 0
+  window.clearInterval(busyTimer)
+  busyTimer = window.setInterval(() => { busySec.value++ }, 1000)
+}
+// x分x秒；达到小时显示 x时x分x秒
+function fmtElapsed(sec: number): string {
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return h + '时' + m + '分' + s + '秒'
+  return m + '分' + s + '秒' // 最小单位分钟秒（0分5秒）
+}
+function stopBusyTimer() {
+  window.clearInterval(busyTimer)
+  busyTimer = undefined
+}
 const inputText = ref('')
 
 // 附件：截图/图片走视觉通道，文本文件（拖入的离线日志等）随消息拼入
-interface Attachment { name: string; size: number; kind: 'image' | 'text'; data: string }
+interface Attachment { name: string; size: number; kind: 'image' | 'text' | 'path'; data: string }
 const inputAtt = ref<Attachment[]>([])
 const ATT_TEXT_MAX = 512 << 10 // 文本附件上限 512KB（更大的文件建议拖入文件列表用查询分析）
 const filePick = ref<HTMLInputElement | null>(null)
@@ -75,14 +97,19 @@ function curStream(): ChatItem | null {
   const arr = items.value
   for (let i = arr.length - 1; i >= 0; i--) {
     if (arr[i].kind === 'assistant' && arr[i].streaming) return arr[i]
-    if (arr[i].kind === 'user') return null // 越过最近 user 还没有 assistant：等占位创建
+    // 授权卡（kind:'user' 但带 auth）不是对话轮——须跳过继续向前找流式消息；
+    // 曾在此返回 null：授权卡弹出后所有事件（已授权/清单/续跑输出）被静默丢弃，
+    // 表现为「点击授权后一直转圈零输出」
+    if (arr[i].kind === 'user' && !arr[i].auth) return null // 越过最近 user 还没有 assistant：等占位创建
   }
   return null
 }
 // 事件按 Seq 连续应用：桥不保证顺序，乱序缓存等前序到齐（后端每轮重置 Seq）；
-// pending 容量防御：极端堆积时丢弃最旧（事件已大量丢失的场合顺序无从谈起）
+// 跳洞恢复：短暂等待后仍缺号则跳过空洞按升序应用——桥丢事件时严禁永久冻结
+//（实测：点授权后后端已续跑，一个事件丢失让后续全部堆在缓冲区、UI 零输出）
 const applySeq = ref(0)
 const pendingEvts = new Map<number, { kind: string; text: string; detail: string }>()
+let gapTimer: number | undefined
 function onEvent(e: { kind: string; seq?: number; text: string; detail: string }) {
   if (typeof e.seq !== 'number' || e.seq <= 0) { applyEvt(e); return }
   if (e.seq <= applySeq.value) return // 重复投递
@@ -91,11 +118,36 @@ function onEvent(e: { kind: string; seq?: number; text: string; detail: string }
     const first = Math.min(...pendingEvts.keys())
     pendingEvts.delete(first)
   }
+  drainPending()
+}
+function drainPending() {
   while (pendingEvts.has(applySeq.value + 1)) {
     const nx = pendingEvts.get(applySeq.value + 1)!
     pendingEvts.delete(applySeq.value + 1)
     applySeq.value++
     applyEvt(nx)
+  }
+  if (!pendingEvts.size) { clearGapTimer(); return }
+  // 有洞：给乱序补投 400ms 余地，仍缺即跳洞（丢一片的代价是几个字符，冻结不可接受）
+  if (gapTimer === undefined) {
+    gapTimer = window.setTimeout(() => {
+      gapTimer = undefined
+      flushPendingSkipHoles()
+    }, 400)
+  }
+}
+function clearGapTimer() {
+  if (gapTimer !== undefined) { window.clearTimeout(gapTimer); gapTimer = undefined }
+}
+// 跳洞应用缓冲区全部事件（轮收尾兜底也走这里：尾部事件不能卡在缓冲区里丢展示）
+function flushPendingSkipHoles() {
+  const seqs = Array.from(pendingEvts.keys()).sort((a, b) => a - b)
+  for (const s of seqs) {
+    if (s <= applySeq.value) { pendingEvts.delete(s); continue }
+    const ev = pendingEvts.get(s)!
+    pendingEvts.delete(s)
+    applySeq.value = s
+    applyEvt(ev)
   }
 }
 // 流式增量展示节流：事件按 seq 严格有序应用，但 text 写入按 50ms 攒批——
@@ -117,9 +169,10 @@ function applyEvt(e: { kind: string; text: string; detail: string }) {
     case 'tool_call':
       cur.steps.push({ kind: 'call', text: e.text, detail: e.detail, done: false }); break
     case 'tool_result': {
-      // 配对到最近一个同名未完成调用
+      // 配对到最近一个同名步骤卡：进度详情（开始读取/等待授权/已授权…）累进同一张卡，
+      // 不因 done 已置而另开新卡——一次 read_source 的时间线只占一行
       for (let i = cur.steps.length - 1; i >= 0; i--) {
-        if (cur.steps[i].kind === 'call' && cur.steps[i].text === e.text && !cur.steps[i].done) {
+        if (cur.steps[i].kind === 'call' && cur.steps[i].text === e.text) {
           cur.steps[i].done = true
           cur.steps[i].detail += '\n→ ' + e.detail
           return
@@ -147,20 +200,29 @@ function prefill(text: string) {
   inputText.value = text
   nextTick(() => inputEl.value?.focus())
 }
-defineExpose({ onEvent, prefill })
+// defineExpose 已在 addPathAtt 处统一声明（onEvent/prefill/addPathAtt/showAuthCard）
 
 // ---------- 动作 ----------
 function pushAssistant() {
   applySeq.value = 0
   pendingEvts.clear()
+  clearGapTimer()
   items.value.push({ kind: 'assistant', text: '', reasoning: '', steps: [], streaming: true })
   stickBottom.value = true
 }
 function finishStream(err?: string) {
   flushNow()
+  // 收尾兜底：缓冲区若还有未应用事件（洞后 400ms 未到即轮结束），跳洞冲进当前消息
+  flushPendingSkipHoles()
+  clearGapTimer()
+  stopBusyTimer()
   const arr = items.value
   for (let i = arr.length - 1; i >= 0; i--) {
     if (arr[i].kind === 'assistant' && arr[i].streaming) { arr[i].streaming = false; break }
+  }
+  // 阻塞授权下正常结束时不应有未决卡；仍有=本轮被停止/超时中断，标失效防可点残卡
+  for (const it of arr) {
+    if (it.auth && !it.auth.done) it.auth.done = '已失效（本轮已结束）'
   }
   if (err) items.value.push({ kind: 'error', text: err, reasoning: '', steps: [], streaming: false })
   busy.value = false
@@ -180,9 +242,10 @@ function diagnose() {
   items.value.push({ kind: 'user', text: '诊断当前结果集', reasoning: '', steps: [], images: [], streaming: false })
   pushAssistant()
   busy.value = true
+  startBusyTimer()
   AiDiagnose(activeProfile.value, activeModel.value, effortSel.value)
     .then(() => finishStream())
-    .catch(e => finishStream(String(e)))
+    .catch(e => finishStream(String(e).includes('context canceled') ? undefined : String(e)))
 }
 // 追问（可带图；主模型/视觉路由由后端按配置决定）
 function send() {
@@ -193,18 +256,57 @@ function send() {
   const imgs = atts.filter(a => a.kind === 'image').map(a => a.data)
   const textBlocks = atts.filter(a => a.kind === 'text')
     .map(a => `\n\n--- 附件：${a.name}（${fmtSize(a.size)}）---\n${a.data}`)
-  const text = text0 + textBlocks.join('')
+  const pathBlocks = atts.filter(a => a.kind === 'path')
+    .map(a => `\n\n--- 路径附件：${a.data} ---\n（可用 read_source 工具读取该路径，需用户授权；目录会返回一层清单）`)
+  const text = text0 + textBlocks.join('') + pathBlocks.join('')
   items.value.push({ kind: 'user', text: text0, reasoning: '', steps: [], images: imgs,
     atts: atts.map(a => ({ name: a.name, size: a.size, kind: a.kind })), streaming: false })
   inputText.value = ''
   inputAtt.value = []
   pushAssistant()
   busy.value = true
+  startBusyTimer()
   AiFollowup(activeProfile.value, activeModel.value, effortSel.value, text, imgs)
     .then(() => finishStream())
-    .catch(e => finishStream(String(e)))
+    .catch(e => finishStream(String(e).includes('context canceled') ? undefined : String(e)))
 }
 function stop() { CancelAi().catch(() => {}) }
+// 新会话：两段确认防误触（当前会话将不存在）——第一次点亮起「确认」，再点才执行，
+// 2.5s 不点自动复原；会话进行中不可用（先停止，避免边流边清的状态错乱）
+const newSessionArmed = ref(false)
+let newSessionTimer: number | undefined
+function newSession() {
+  if (!newSessionArmed.value) {
+    newSessionArmed.value = true
+    window.clearTimeout(newSessionTimer)
+    newSessionTimer = window.setTimeout(() => { newSessionArmed.value = false }, 2500)
+    return
+  }
+  window.clearTimeout(newSessionTimer)
+  newSessionArmed.value = false
+  AiResetSession().then(() => {
+    items.value = []
+    applySeq.value = 0
+    pendingEvts.clear()
+    clearGapTimer()
+    busy.value = false
+  }).catch(() => {})
+}
+
+// ---------- 取证时间线摘要（默认收起态的一行） ----------
+// probeCount 可收起的步骤数（工具调用 + 视觉转述；产出文档是交付物不算）
+function probeCount(it: ChatItem): number {
+  let n = 0
+  for (const s of it.steps) if (s.kind !== 'doc') n++
+  return n
+}
+// liveProbe 最新一步的动作与状态（收起时仍能看到「现在在干什么」）
+function liveProbe(it: ChatItem): string {
+  for (let i = it.steps.length - 1; i >= 0; i--) {
+    if (it.steps[i].kind !== 'doc') return it.steps[i].text + (it.steps[i].done ? ' ✓' : ' 取证中…')
+  }
+  return ''
+}
 
 // ---------- 引用 / 建议 ----------
 function validRow(n: number): boolean { return n >= 1 && n <= props.statsTotal }
@@ -217,6 +319,26 @@ function openFileRef(file: string, line: number) {
     items.value.push({ kind: 'error', text: `引用无法定位（${file}:${line}）：${e}`, reasoning: '', steps: [], streaming: false })
   })
 }
+// ---------- 源码读取授权卡 ----------
+// AI 请求读源码目录时弹出：允许并记住（持久 ai.json）/ 仅本次（会话内）/ 拒绝（本会话不再问）
+function showAuthCard(e: { id: string; path: string; reason: string; sensitive?: boolean }) {
+  items.value.push({ kind: 'user', text: '', reasoning: '', steps: [], streaming: false,
+    auth: { id: e.id, path: e.path, reason: e.reason, sensitive: !!e.sensitive, done: '' } })
+  stickBottom.value = true
+}
+function answerAuth(idx: number, allow: boolean, remember: boolean) {
+  const it = items.value[idx]
+  if (!it?.auth || it.auth.done) return
+  const au = it.auth
+  au.done = allow ? (remember ? '已允许并记住' : '已允许（仅本次）') : '已拒绝'
+  stickBottom.value = true // 回执后强制回底跟随：阻塞授权已续跑，后续取证/输出在视野内
+  AiAuthRespond(au.id, allow, remember).then((ok: boolean) => {
+    if (!ok) au.done = '回执未送达（本轮已结束）——下次读取会重新询问'
+  }).catch(() => {
+    au.done = '回执发送失败——下次读取会重新询问'
+  })
+}
+
 // ---------- 会话恢复：重开面板从后端 msgs 快照重建（关闭面板不再丢历史） ----------
 function rebuildFromMsgs(msgs: Array<{ role: string; content: unknown; name?: string; toolCalls?: Array<{ id: string; function: { name: string; arguments: string } }> }>) {
   if (!msgs?.length) return
@@ -279,7 +401,10 @@ onMounted(() => {
     rebuildFromMsgs((info.msgs as never) ?? [])
   }).catch(() => {})
 })
-onUnmounted(() => { if (flushTimer !== undefined) window.clearTimeout(flushTimer) })
+onUnmounted(() => {
+  if (flushTimer !== undefined) window.clearTimeout(flushTimer)
+  stopBusyTimer()
+})
 
 const mdHandlers = {
   onRowRef: jumpRow,
@@ -301,10 +426,21 @@ function onPaste(e: ClipboardEvent) {
     }
   }
 }
-// 拖入附件：图片走视觉；文本类（日志/配置）读内容随消息分析——离线日志一起排查的入口
-function onDrop(e: DragEvent) {
-  for (const f of Array.from(e.dataTransfer?.files ?? [])) readFile(f)
+// 拖入文件/文件夹 → 路径附件：不读内容，AI 经 read_source（用户授权）自行读取；
+// 图片文件例外走视觉通道（二进制 read_source 读不了）
+const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i
+function addPathAtt(paths: string[]) {
+  for (const p of paths) {
+    if (IMG_EXT.test(p)) {
+      // 图片文件拖入也走路径（WebView2 安全策略禁 fetch file://，无法转 dataURL；
+      // 想给 AI 看图请用 Ctrl+V 粘贴截图）
+      items.value.push({ kind: 'error', text: `「${p}」是图片文件：拖入走路径附件（AI 无法读取二进制）；想让它看图请直接粘贴截图（Ctrl+V）`, reasoning: '', steps: [], streaming: false })
+      continue
+    }
+    inputAtt.value.push({ name: p, size: 0, kind: 'path', data: p })
+  }
 }
+defineExpose({ onEvent, prefill, addPathAtt, showAuthCard })
 const TEXT_EXT = /\.(log|txt|json|xml|md|csv|ya?ml|sql|stack|trace|out)$/i
 function readFile(f: File) {
   if (f.size > ATT_TEXT_MAX && !f.type.startsWith('image/')) {
@@ -378,19 +514,27 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
       <span class="spacer"></span>
       <button v-if="configured" class="ai-redo" :disabled="busy || !statsTotal" title="基于当前结果集重新诊断"
         @click="diagnose"><AppIcon name="crosshair" :size="12" />重新诊断</button>
+      <button class="ai-redo" :class="{ armed: newSessionArmed }" :disabled="busy"
+        :title="busy ? '会话进行中，请先停止再开新会话' : (newSessionArmed ? '再点一次确认：当前会话将不存在' : '清空上下文重新开始（当前会话将不存在）')"
+        @click="newSession">
+        <AppIcon name="rotate-ccw" :size="12" />{{ newSessionArmed ? '确认新会话？' : '新会话' }}
+      </button>
       <button class="ai-x" title="关闭" @click="emit('close')"><AppIcon name="x" :size="12" /></button>
       <template v-if="configured">
         <div class="ai-pickers">
-          <select v-model="activeProfile" class="ai-sel" title="模型厂商">
+          <select v-model="activeProfile" class="ai-sel" :disabled="busy"
+            :title="busy ? '会话进行中——停止或结束后可切换厂商' : '模型厂商'">
             <option v-for="p in config.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
-          <select v-model="effortSel" class="ai-sel ai-effort" title="思考等级（随时切换，下次请求生效；默认不发该字段）">
+          <select v-model="effortSel" class="ai-sel ai-effort" :disabled="busy"
+            :title="busy ? '会话进行中——停止或结束后可调整思考等级' : '思考等级（切换后下次请求生效；默认不发该字段）'">
             <option value="">思考·默认</option>
             <option value="low">思考·低</option>
             <option value="medium">思考·中</option>
             <option value="high">思考·高</option>
           </select>
-          <select v-model="activeModel" class="ai-sel ai-model" :title="ctxNote">
+          <select v-model="activeModel" class="ai-sel ai-model" :disabled="busy"
+            :title="busy ? '会话进行中——停止或结束后可切换模型' : ctxNote">
             <option v-if="activeModel && !curModels.some(m => m.name === activeModel)" :value="activeModel">{{ activeModel }}（手填）</option>
             <option v-if="!curModels.length && !activeModel" value="">（未拉取模型列表）</option>
             <option v-for="m in curModels" :key="m.name" :value="m.name">
@@ -422,13 +566,34 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
       </div>
 
       <template v-for="(it, ii) in items" :key="ii">
-        <!-- 用户消息 -->
-        <div v-if="it.kind === 'user'" class="msg-user">
+        <!-- 授权卡：待答为完整卡；答完收起为单行记录（保留授权痕迹不占版面） -->
+        <div v-if="it.auth && !it.auth.done" class="auth-card" :class="{ sens: it.auth.sensitive }">
+          <div class="auth-head">
+            <AppIcon :name="it.auth.sensitive ? 'info' : 'folder'" :size="13" />
+            <span>{{ it.auth.sensitive ? '敏感文件读取授权（每次读取均需确认）' : '目录访问授权请求（整棵子树有效）' }}</span>
+          </div>
+          <div class="auth-path" :title="it.auth.path">{{ it.auth.path }}</div>
+          <div class="auth-reason">{{ it.auth.sensitive ? '该文件可能包含密钥/凭证' : '动机' }}：{{ it.auth.reason || '（未说明）' }}</div>
+          <div class="auth-btns">
+            <template v-if="!it.auth.sensitive">
+              <button class="primary" @click="answerAuth(ii, true, true)">允许并记住</button>
+            </template>
+            <button :class="it.auth.sensitive ? 'primary' : ''" @click="answerAuth(ii, true, false)">仅本次</button>
+            <button class="danger" @click="answerAuth(ii, false, false)">拒绝</button>
+          </div>
+        </div>
+        <div v-else-if="it.auth" class="auth-rec" :class="{ deny: !it.auth.done.startsWith('已允许') }">
+          <AppIcon :name="it.auth.done.startsWith('已允许') ? 'check' : 'x'" :size="11" />
+          <span class="auth-rec-st">{{ it.auth.done }}</span>
+          <span class="auth-rec-path" :title="it.auth.path">{{ it.auth.path }}</span>
+        </div>
+        <!-- 用户消息（授权卡项 text 为空——排除，否则渲染出空气泡） -->
+        <div v-if="it.kind === 'user' && !it.auth" class="msg-user">
           <div class="u-bubble">
-            <div class="u-text">{{ it.text }}</div>
+            <div v-if="it.text" class="u-text">{{ it.text }}</div>
             <div v-if="it.atts?.length" class="u-atts">
               <span v-for="(a, gi) in it.atts" :key="gi" class="u-att">
-                <AppIcon :name="a.kind === 'image' ? 'image' : 'file-text'" :size="10" />{{ a.name }}（{{ fmtSize(a.size) }}）
+                <AppIcon :name="a.kind === 'image' ? 'image' : (a.kind === 'path' ? 'folder' : 'file-text')" :size="10" />{{ a.name }}（{{ a.kind === 'path' ? '路径' : fmtSize(a.size) }}）
               </span>
             </div>
             <div v-if="it.images?.length" class="u-imgs">
@@ -445,9 +610,16 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
             <summary>思考中…</summary>
             <pre>{{ it.reasoning }}</pre>
           </details>
-          <!-- 取证时间线：结论前的过程，证据纪律的可视化 -->
+          <!-- 取证时间线：默认收起为一行摘要（步数 + 最新动作实时跳动），点击展开；
+               产出文档卡是交付物不随收起隐藏 -->
           <div v-if="it.steps.length" class="ai-steps">
-            <div v-for="(st, si) in it.steps" :key="si" class="step" :class="'step-' + st.kind">
+            <div v-if="probeCount(it)" class="steps-cap" :class="{ open: it.stepsOpen }" @click="it.stepsOpen = !it.stepsOpen">
+              <AppIcon name="terminal" :size="11" />
+              <span class="cap-n">取证 {{ probeCount(it) }} 步</span>
+              <span class="cap-live">{{ liveProbe(it) }}</span>
+              <span class="cap-chev">{{ it.stepsOpen ? '收起' : '展开' }}</span>
+            </div>
+            <div v-show="it.stepsOpen || st.kind === 'doc'" v-for="(st, si) in it.steps" :key="si" class="step" :class="'step-' + st.kind">
               <i class="dot"></i>
               <div class="st-body">
                 <div class="st-line">
@@ -469,17 +641,26 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
           <div v-if="it.text" class="ai-md">
             <component :is="() => renderMd(it.text, mdHandlers)" />
           </div>
-          <div v-else-if="!it.steps.length && it.streaming" class="ai-wait">正在分析<span class="dots">…</span></div>
-          <span v-if="it.streaming && it.text" class="cursor"></span>
+          <div v-if="busy && it.streaming" class="ai-wait-v2">
+            <span class="ai-spinner"></span>
+            <span>正在分析</span>
+            <span class="ai-elapsed" v-if="busySec > 0">{{ fmtElapsed(busySec) }}</span>
+          </div>
+
         </div>
       </template>
     </div>
 
     <!-- 输入区 -->
-    <div class="ai-input" v-if="configured" @dragover.prevent @drop.prevent="onDrop">
+    <div class="ai-input" v-if="configured" @dragover.prevent>
       <div v-if="inputAtt.length" class="in-imgs">
         <div v-for="(a, gi) in inputAtt" :key="gi" class="in-img">
           <img v-if="a.kind === 'image'" :src="a.data" alt="待发送" />
+          <div v-else-if="a.kind === 'path'" class="in-file in-path" :title="'路径附件（AI 经授权读取）：' + a.data">
+            <AppIcon name="folder" :size="14" />
+            <span class="in-file-n">{{ a.data }}</span>
+            <span class="in-file-s">路径</span>
+          </div>
           <div v-else class="in-file" :title="a.name + '（' + fmtSize(a.size) + '）'">
             <AppIcon name="file-text" :size="14" />
             <span class="in-file-n">{{ a.name }}</span>
@@ -493,12 +674,12 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
           :disabled="busy" @click="pickImages"><AppIcon name="image" :size="14" /></button>
         <input ref="filePick" type="file" accept="image/*" multiple hidden @change="onPicked" />
         <textarea ref="inputEl" v-model="inputText" class="in-text" rows="2"
-          placeholder="追问（Enter 发送 · Shift+Enter 换行 · Ctrl+V 粘贴截图 · 可拖入日志文件）"
+          placeholder="追问（Enter 发送 · Shift+Enter 换行 · Ctrl+V 粘贴截图 · 拖入文件/文件夹=路径附件，AI 经授权读取）"
           :disabled="!activeModel" @keydown="onKey" @paste="onPaste"></textarea>
         <button v-if="!busy" class="in-send" :disabled="(!inputText.trim() && !inputAtt.length) || !activeModel" title="发送" @click="send">
           <AppIcon name="send" :size="13" />
         </button>
-        <button v-else class="in-stop" title="停止" @click="stop"><AppIcon name="square" :size="12" /></button>
+        <button v-else class="in-stop" title="停止分析" @click="stop">停止</button>
       </div>
       <div class="in-note">{{ ctxNote }} · 引用 [行 N] 可点回结果表核验 · 产出文档见取证时间线</div>
     </div>
@@ -547,6 +728,7 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
   gap: 4px;
 }
 .ai-redo:hover:not(:disabled) { color: var(--accent-strong); border-color: var(--accent-line); }
+.ai-redo.armed { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .ai-x {
   flex: none;
   background: none;
@@ -573,6 +755,7 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
   font-family: var(--mono);
   background: var(--bg-elev);
 }
+.ai-sel:disabled { opacity: .5; cursor: not-allowed; } /* 会话进行中锁定切档/切模型/思考档 */
 .ai-model { flex: 1.6 1 0; }
 .ai-effort { flex: 0 0 auto; width: 84px; }
 
@@ -622,6 +805,55 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
 }
 .u-att :deep(svg) { color: var(--text-faint); flex: none; }
 
+/* 授权卡 */
+.auth-card.sens { border-color: color-mix(in srgb, var(--lvl-3-fg) 45%, transparent); background: var(--lvl-3-bg); }
+.auth-card.sens .auth-head { color: var(--lvl-3-fg); }
+.auth-card {
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.auth-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--accent-strong); }
+.auth-path { font-family: var(--mono); font-size: 10.5px; color: var(--text); word-break: break-all; }
+.auth-reason { font-size: 11px; color: var(--text-dim); }
+.auth-btns { display: flex; gap: 6px; margin-top: 4px; }
+.auth-btns button { font-size: 11px; padding: 3px 10px; }
+.auth-btns .danger:hover { border-color: var(--danger); color: var(--danger); }
+/* 已答授权单行记录（收起态） */
+.auth-rec { display: flex; align-items: center; gap: 6px; max-width: 560px;
+  padding: 3px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elev); color: var(--text-dim); }
+.auth-rec-st { font-size: 10.5px; flex: none; }
+.auth-rec-path { font-family: var(--mono); font-size: 10px; color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-rec.deny .auth-rec-st { color: var(--text-faint); }
+.in-path .in-file-n { color: var(--accent-strong); }
+
+/* 等待状态：旋转 spinner + 持续秒数 */
+.ai-wait-v2 {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11.5px; color: var(--text-dim);
+  padding: 4px 0;
+}
+.ai-spinner {
+  width: 14px; height: 14px; flex: none;
+  border: 2px solid var(--bg-elev);
+  border-top-color: var(--accent-strong);
+  border-radius: 50%;
+  animation: ai-spin .8s linear infinite;
+}
+.ai-elapsed {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: 999px; padding: 1px 6px;
+}
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+
 /* 用户消息 */
 .msg-user { display: flex; justify-content: flex-end; }
 .u-bubble {
@@ -668,6 +900,19 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
 }
 
 /* 取证时间线：左竖线 + 节点圆点（取证 accent / 产出 ok / 视觉 indigo 走 accent-soft） */
+.steps-cap { /* 收起态摘要行：步数 + 最新动作，点击展开 */
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 10px; margin: 2px 0 4px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elev); cursor: pointer; user-select: none;
+  font-size: 10.5px; color: var(--text-dim);
+}
+.steps-cap:hover { color: var(--text); border-color: var(--accent-line); }
+.steps-cap.open { margin-bottom: 6px; }
+.steps-cap .cap-n { flex: none; color: var(--text); font-weight: 600; }
+.steps-cap .cap-live { flex: 1; min-width: 0; font-family: var(--mono); font-size: 10px;
+  color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps-cap .cap-chev { flex: none; color: var(--text-faint); }
 .ai-steps {
   display: flex;
   flex-direction: column;
@@ -817,19 +1062,6 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
 }
 .ai-md :deep(.md-q:hover) { border-color: var(--accent-line); color: var(--accent-strong); }
 
-.ai-wait { font-size: 11.5px; color: var(--text-faint); }
-.dots { animation: dots 1.2s steps(3) infinite; }
-@keyframes dots { 0% { content: ''; } 50% { content: '···'; } 100% { content: '…'; } }
-.cursor {
-  display: inline-block;
-  width: 7px;
-  height: 13px;
-  background: var(--accent-strong);
-  animation: blink 1s steps(2) infinite;
-  vertical-align: text-bottom;
-}
-@keyframes blink { 50% { opacity: 0; } }
-
 /* 输入区 */
 .ai-input {
   flex: none;
@@ -895,13 +1127,12 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
 .in-send:disabled { opacity: .35; }
 .in-stop {
   flex: none;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  justify-content: center;
+  padding: 5px 10px;
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  font-size: 11.5px;
 }
+.in-stop:hover { border-color: var(--danger); color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .in-note {
   font-family: var(--mono);
   font-size: 9.5px;

@@ -33,6 +33,13 @@ const queryProg = ref<{ scanned: number; total: number; matched: number } | null
 const stats = ref<logscan.QueryStats | null>(null)
 const queryError = ref('')
 const fileNotice = ref('') // 加载提示（zip 内跳过项等，非错误）
+let fileNoticeTimer: number | undefined
+// 瞬时提示（拖放分流反馈等）：5s 自动消失，不留常驻条
+function flashNotice(msg: string) {
+  fileNotice.value = msg
+  window.clearTimeout(fileNoticeTimer)
+  fileNoticeTimer = window.setTimeout(() => { fileNotice.value = '' }, 5000)
+}
 
 // 结果视图模式：false=平铺（默认）；true=按时间归并（后端重排，不重扫文件）
 const mergedMode = ref(false)
@@ -211,6 +218,10 @@ function onClusterProgress(p: any) {
 function onAiEvent(e: any) {
   aiPanelRef.value?.onEvent(e)
 }
+// 源码读取授权请求转发（授权卡：允许并记住/仅本次/拒绝）
+function onAiAuth(e: { id: string; path: string; reason: string }) {
+  aiPanelRef.value?.showAuthCard(e)
+}
 
 onMounted(() => {
   EventsOn('files:progress', onFileProgress)
@@ -218,11 +229,34 @@ onMounted(() => {
   EventsOn('update:progress', onUpdateProgress)
   EventsOn('cluster:progress', onClusterProgress)
   EventsOn('ai:event', onAiEvent)
+  EventsOn('ai:auth', onAiAuth)
   // 拖放必须经 OnFileDrop 正规注册：其内部才会挂 dragover/drop 监听（preventDefault
   // 允许放下）并接通 Windows 的文件路径桥接；此前直接 EventsOn('wails:file-drop')
   // 事件链从未接通，拖拽从未生效。useDropTarget=false：窗口任意位置都可放
-  OnFileDrop((_x, _y, paths) => {
-    if (paths && paths.length > 0) addFiles(paths)
+  OnFileDrop((x, y, paths) => {
+    if (!paths || paths.length === 0) return
+    // 拖到 AI 面板 = 路径附件（文件/文件夹均可，AI 经授权按路径读取），不进左侧日志列表。
+    // Wails 拖放是原生窗口级桥（DOM dragenter/drop 均被吞），唯一分流手段是回调坐标
+    // 判定落点是否在 AI 面板矩形内。回调坐标口径随 Wails 版本/平台不定（视口 CSS /
+    // 视口物理 / 屏幕物理三种皆有可能），三口径全试；命中给顶部提示反馈，未命中走左侧
+    if (aiOpen.value && aiPanelRef.value) {
+      const el = document.querySelector('.ai-col') as HTMLElement | null
+      if (el && dropHitsAi(x, y, el.getBoundingClientRect())) {
+        // 绝对路径判定用纯字符比较（正则在真机实测误判，弃用）：盘符 X: / UNC / POSIX；
+        // Wails 拖目录会夹杂空串槽位，一并过滤
+        const isAbs = (p: string) => p.length > 1 && (p[1] === ':' || p.startsWith('\\\\') || p.startsWith('/'))
+        const abs = paths.filter(isAbs)
+        const bad = paths.filter(p => p && !isAbs(p))
+        if (abs.length) {
+          aiPanelRef.value?.addPathAtt(abs) // 成功提示省略：输入框附件 chip 本身就是可见反馈
+          if (bad.length) flashNotice('部分拖入项不是绝对路径已忽略：' + bad.join('、'))
+        } else {
+          flashNotice('拖入项均不是可用的绝对路径，未添加')
+        }
+        return
+      }
+    }
+    addFiles(paths)
   }, false)
   themeMedia.addEventListener('change', onSystemThemeChange)
   refreshFiles()
@@ -262,6 +296,7 @@ onUnmounted(() => {
   EventsOff('update:progress')
   EventsOff('cluster:progress')
   EventsOff('ai:event')
+  EventsOff('ai:auth')
   OnFileDropOff()
   themeMedia.removeEventListener('change', onSystemThemeChange)
 })
@@ -402,6 +437,19 @@ function levelClick(lv: number) {
   queryBarRef.value?.addLevelAndSearch(lv)
 }
 
+// dropHitsAi 拖放回调坐标是否命中 AI 面板矩形——三口径全试（视口 CSS / 视口物理 /
+// 屏幕物理换算视口），任一命中即真。挂 window 供浏览器端验证口径命中情况
+function dropHitsAi(x: number, y: number, r: DOMRect): boolean {
+  const dpr = window.devicePixelRatio || 1
+  const inside = (px: number, py: number) =>
+    px >= r.left - 8 && px <= r.right + 8 && py >= r.top - 8 && py <= r.bottom + 8
+  if (inside(x, y)) return true // 视口 CSS
+  if (inside(x / dpr, y / dpr)) return true // 视口物理
+  // 屏幕物理：换回视口 CSS（window.screenX/Y 为窗口外框 CSS 位，容差吸收标题栏高差）
+  return inside(x / dpr - window.screenX, y / dpr - window.screenY - 40)
+}
+;(window as unknown as { lhDropHitsAi?: typeof dropHitsAi }).lhDropHitsAi = dropHitsAi
+
 // 时间直方图拖框联动：设置时间范围并立即重查（0/0 = 清除时间条件复原）
 function onHistBrush(startNs: number, endNs: number) {
   queryBarRef.value?.setTimeRangeAndSearch(startNs, endNs)
@@ -487,7 +535,7 @@ function refreshAiConfig() {
         ref="queryBarRef"
         :disabled="!canQuery" :querying="querying" :progress="queryProg" :error="queryError"
         :files="files" :selected="selected"
-        @search="doQuery" @cancel="Cancel"
+        @search="doQuery" @cancel="Cancel" @close-error="queryError = ''"
       >
         <template #actions>
           <div class="actions">

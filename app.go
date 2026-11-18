@@ -16,6 +16,8 @@ import (
 	"time"
 	"unsafe"
 
+	"log-hunter/internal/ai/conf"
+	"log-hunter/internal/ai/diag"
 	"log-hunter/internal/appconf"
 	"log-hunter/internal/logscan"
 	"log-hunter/internal/update"
@@ -34,6 +36,11 @@ type App struct {
 	winShown   atomic.Bool // 窗口已显示且稳定（显示后留 300ms 消化焦点消息再置位；
 	// 对话框弹出前必须等待它——窗口显示在途撞上文件对话框
 	// 模态会让 WebView2 Focus 报参数错直接 Fatal 闪退）
+
+	// AI 诊断设施（internal/ai：conf 配置 / diag 编排+会话；见 ai.go）
+	aiConf *conf.Store
+	aiDiag *diag.Diagnoser
+	aiSess *diag.Session
 }
 
 // NewApp 创建应用实例；配置存储打开失败降级为内存态（不阻断启动）
@@ -42,7 +49,12 @@ func NewApp(procStart time.Time) *App {
 	if err != nil {
 		conf = nil
 	}
-	return &App{session: logscan.NewSession(), conf: conf, procStart: procStart}
+	a := &App{session: logscan.NewSession(), conf: conf, procStart: procStart}
+	// AI 设施：data 目录取 config.json 同目录（exe 同级 data/，已被 gitignore）
+	if p, err := appconf.DefaultPath(); err == nil {
+		a.initAI(filepath.Dir(p))
+	}
+	return a
 }
 
 // startup Wails 生命周期：保存上下文；清理上次自动更新残留的 .old；

@@ -6,8 +6,32 @@ export function AddFiles(arg1) {
   return window['go']['main']['App']['AddFiles'](arg1);
 }
 
+export function AiDiagnose(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AiDiagnose'](arg1, arg2, arg3);
+}
+
+export function AiFollowup(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['AiFollowup'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function AiPullModels(arg1) {
+  return window['go']['main']['App']['AiPullModels'](arg1);
+}
+
+export function AiResolveRef(arg1, arg2) {
+  return window['go']['main']['App']['AiResolveRef'](arg1, arg2);
+}
+
+export function AiSessionInfo() {
+  return window['go']['main']['App']['AiSessionInfo']();
+}
+
 export function Cancel() {
   return window['go']['main']['App']['Cancel']();
+}
+
+export function CancelAi() {
+  return window['go']['main']['App']['CancelAi']();
 }
 
 export function CancelExport() {
@@ -22,6 +46,10 @@ export function ClearAll() {
   return window['go']['main']['App']['ClearAll']();
 }
 
+export function ClusterResults() {
+  return window['go']['main']['App']['ClusterResults']();
+}
+
 export function CopyLineText(arg1, arg2) {
   return window['go']['main']['App']['CopyLineText'](arg1, arg2);
 }
@@ -32,6 +60,10 @@ export function CopyText(arg1) {
 
 export function ExportResults(arg1, arg2) {
   return window['go']['main']['App']['ExportResults'](arg1, arg2);
+}
+
+export function GetAiConfig() {
+  return window['go']['main']['App']['GetAiConfig']();
 }
 
 export function GetConfig() {
@@ -102,6 +134,10 @@ export function SaveHistory(arg1, arg2) {
   return window['go']['main']['App']['SaveHistory'](arg1, arg2);
 }
 
+export function SetAiConfig(arg1) {
+  return window['go']['main']['App']['SetAiConfig'](arg1);
+}
+
 export function SetMerged(arg1) {
   return window['go']['main']['App']['SetMerged'](arg1);
 }
@@ -112,6 +148,10 @@ export function SetThemeSettings(arg1, arg2) {
 
 export function StartUpdate() {
   return window['go']['main']['App']['StartUpdate']();
+}
+
+export function TestAiConn(arg1, arg2) {
+  return window['go']['main']['App']['TestAiConn'](arg1, arg2);
 }
 
 export function ValidateRegex(arg1) {

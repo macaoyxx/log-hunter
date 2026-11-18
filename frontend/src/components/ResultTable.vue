@@ -22,6 +22,8 @@ const emit = defineEmits<{
   (e: 'open-context', fileId: number, offset: number): void
   (e: 'level-click', level: number): void
   (e: 'toggle-merged', merged: boolean): void
+  (e: 'cluster'): void // 打开错误聚类面板（对当前结果集聚类）
+  (e: 'ask-ai', text: string): void // 右键「问 AI」：选中文本/整行发给 AI 诊断面板
 }>()
 
 const ROW_H = 30
@@ -70,6 +72,17 @@ function openRowMenu(e: MouseEvent, i: number) {
   rowMenu.value = { x: e.clientX, y: e.clientY, row: r, sel: (window.getSelection()?.toString() ?? '').trim() }
 }
 function closeRowMenu() { rowMenu.value = null }
+// 问 AI：选中文本优先，否则整行（带 文件:行号 锚点，AI 可引用可回查）
+function askRowAi() {
+  const m = rowMenu.value
+  if (!m) return
+  const name = props.fileNames.get(m.row.fileId) ?? ''
+  const text = m.sel
+    ? '请分析这段日志：\n' + m.sel
+    : '请分析这行日志：\n[' + name + ':' + m.row.lineNo + '] ' + (m.row.preview ?? '')
+  rowMenu.value = null
+  emit('ask-ai', text)
+}
 function rowMenuCopiedOK(kind: 'row' | 'sel') {
   rowMenuCopied.value = kind
   window.clearTimeout(rowMenuCloseTimer)
@@ -443,6 +456,9 @@ defineExpose({ jumpToIndex })
         </span>
         <button class="icon-only" :disabled="selIdx < 0 || selIdx >= total - 1" @click="nextRow" title="下一条（↓）"><AppIcon name="chevron-right" :size="14" /></button>
       </span>
+      <button class="cluster-btn" title="错误聚类：模板归一分组，看错误有几种、各多少条" @click="emit('cluster')">
+        <AppIcon name="layers" :size="12" />聚类
+      </button>
       <div class="exp-wrap">
         <button :class="{ open: expOpen }" title="导出查询结果" @click="expOpen = !expOpen">
           <AppIcon name="download" :size="12" />导出
@@ -525,6 +541,7 @@ defineExpose({ jumpToIndex })
         </button>
         <button v-if="rowMenuCopied === 'row'" class="row-menu-item copied" disabled><AppIcon name="check" :size="12" />已复制</button>
         <button v-else class="row-menu-item" title="复制整行的完整原文（不受显示截断限制）" @click="copyRow"><AppIcon name="copy" :size="12" />复制整行</button>
+        <button class="row-menu-item" title="把选中文本（无选中则整行）作为追问发给 AI 诊断" @click="askRowAi"><AppIcon name="sparkles" :size="12" />问 AI 这行</button>
       </div>
     </div>
   </div>

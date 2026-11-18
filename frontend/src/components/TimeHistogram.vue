@@ -35,8 +35,9 @@ const wrap = ref<HTMLElement | null>(null)
 const svgW = ref(900)
 let ro: ResizeObserver | undefined
 function measure() {
-  // 26 = 卡片左右 padding 12×2 + border 2
-  if (wrap.value) svgW.value = Math.max(320, wrap.value.clientWidth - 26)
+  // 26 = 卡片左右 padding 12×2 + border 2。下限 160：最小窗口（960）且 AI 面板
+  // 开着时 main 只剩 ~330，320 的旧下限会比容器还宽导致溢出叠到 AI 面板上
+  if (wrap.value) svgW.value = Math.max(160, wrap.value.clientWidth - 26)
 }
 onMounted(() => {
   measure()
@@ -227,6 +228,7 @@ function reset() { emit('brush', 0, 0) }
 <style scoped>
 .tsh {
   flex: none; display: flex; flex-direction: column; gap: 2px; position: relative;
+  overflow: hidden; /* 物理防线：任何情况下内容不得越出容器（曾叠到 AI 面板） */
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--sheen); padding: 8px 12px 6px; user-select: none;
 }

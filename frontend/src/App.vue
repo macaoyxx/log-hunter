@@ -250,7 +250,7 @@ onMounted(() => {
       SetThemeSettings(themePref.value, palettePref.value).catch(() => {})
     }
   }).catch(() => { /* 配置读取失败维持 localStorage 现值，不阻断 */ })
-  // AI 诊断配置（档案/默认选择；未配置=功能入口引导设置）
+  // AI 诊断配置（厂商/默认选择；未配置=功能入口引导设置）
   refreshAiConfig()
   // 启动收尾：界面就绪上报（后端显示窗口 + 写启动耗时埋点）、关于弹窗启动耗时
   ReportStartupReady().catch(() => {})
@@ -446,7 +446,7 @@ function openCluster() {
     clusterOpen.value = false
   }).finally(() => { clustering.value = false; clusterProg.value = null })
 }
-// 聚类面板「AI 诊断」：打开专家侧栏；未配置任何档案则引导先配置
+// 聚类面板「AI 诊断」：打开专家侧栏；未配置任何厂商则引导先配置
 function openAiDiagnose() {
   aiOpen.value = true
   if (!aiConfig.value.profiles.length) aiSettingsOpen.value = true
@@ -455,6 +455,11 @@ function openAiDiagnose() {
 function openAiSettings() {
   themePopRef.value?.close()
   aiSettingsOpen.value = true
+}
+// 打开 AI 面板（无数据也可直接贴日志/截图问——入口不依赖查询结果）
+function openAiPanel() {
+  themePopRef.value?.close()
+  aiOpen.value = true
 }
 // 右键「问 AI」：打开侧栏并预填追问文本（面板在途请求时不打扰）
 function onAskAi(text: string) {
@@ -491,7 +496,11 @@ function refreshAiConfig() {
               <template #menu>
                 <button class="mi" @click="openAiSettings">
                   <span class="ico"><AppIcon name="sparkles" :size="13" /></span>
-                  <span class="lab"><span>AI 设置</span><span class="sub">端点档案 · 模型 · 视觉</span></span>
+                  <span class="lab"><span>AI 设置</span><span class="sub">厂商 · 模型 · 视觉</span></span>
+                </button>
+                <button class="mi" @click="openAiPanel">
+                  <span class="ico"><AppIcon name="message-square" :size="13" /></span>
+                  <span class="lab"><span>问 AI</span><span class="sub">贴日志/截图直接问 · 无需查询</span></span>
                 </button>
                 <button class="mi" @click="doCheckUpdate">
                   <span class="ico"><AppIcon name="refresh-cw" :size="13" /></span>
@@ -634,6 +643,7 @@ function refreshAiConfig() {
 .main {
   flex: 1;
   min-width: 0;
+  overflow: hidden; /* 内容区统一裁剪：窄窗下任何子面板（画布/直方图）不得越界叠到 AI 列 */
   display: flex;
   flex-direction: column;
   gap: 8px;

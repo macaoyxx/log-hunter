@@ -14,6 +14,7 @@ const props = defineProps<{
   highlightRegex: string
 }>()
 const emit = defineEmits<{
+  (e: 'ask-ai', text: string): void
   (e: 'close'): void
   (e: 'jump', offset: number): void
 }>()
@@ -75,6 +76,17 @@ function copyRow() {
   CopyLineText(props.target.fileId, props.target.offset)
     .then(() => menuCopiedOK('copyLine'))
     .catch(() => { copied.value = '复制失败'; menu.value = null })
+}
+
+// 问 AI：选中文本优先，无选中发面板目标行原文（带文件:行号锚点供 AI 引用）
+function askAi() {
+  const sel = menu.value?.sel
+  if (sel) { emit('ask-ai', '请分析这段日志：\n' + sel); menu.value = null; return }
+  const t = rows.value.find(r => r.isTarget)
+  if (t) {
+    emit('ask-ai', '请分析这行日志：\n[' + (props.fileName ?? '') + ':' + t.lineNo + '] ' + t.text)
+  }
+  menu.value = null
 }
 
 // 复制上下文全部行原文（按顺序拼接，与日志文件一致）
@@ -181,6 +193,7 @@ function clearAllMarks() {
     <ContextMenu
       v-if="menu" :x="menu.x" :y="menu.y" :sel-text="menu.sel" :used-slots="usedSlots" :copied-hint="menu.copied"
       @copy="copySel" @copy-line="copyRow" @mark="applyMark" @clear-slot="clearSlot" @clear-all="clearAllMarks"
+      @ask="askAi"
       @close="menu = null"
     />
     <div class="foot">提示：点击任意行移视角；选中文本右键加标记；⛶ 可放大铺满；行内容为完整原文（左右滚动查看）</div>
@@ -190,7 +203,7 @@ function clearAllMarks() {
 <style scoped>
 .panel {
   position: fixed;
-  top: 0; right: 0; bottom: 0;
+  top: 0; right: var(--ctx-right, 0px); bottom: 0;
   width: min(760px, 64vw);
   background: var(--bg-panel);
   border-left: 1px solid var(--border-strong);

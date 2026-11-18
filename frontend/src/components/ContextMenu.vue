@@ -18,6 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'copy'): void
   (e: 'copyLine'): void
+  (e: 'ask'): void // 问 AI：把选中文本（无选中则整行）交给 AI 诊断面板
   (e: 'mark', color: number): void
   (e: 'clearSlot', color: number): void
   (e: 'clearAll'): void
@@ -127,6 +128,9 @@ function onScroll() { emit('close') }
     </button>
     <button v-else class="mi" :title="'复制整行的完整原文（不受显示截断限制）'" @click="emit('copyLine')">
       <span class="m-ico"><AppIcon name="copy" :size="12" /></span>复制整行
+    </button>
+    <button class="mi" title="把选中文本（无选中则整行）作为追问发给 AI 诊断" @click="emit('ask')">
+      <span class="m-ico"><AppIcon name="sparkles" :size="12" /></span>问 AI 这行
     </button>
     <div class="sep"></div>
     <button

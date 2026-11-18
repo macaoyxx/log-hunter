@@ -283,7 +283,13 @@ function rerunLast() {
   if (history.value[0]) emit('search', history.value[0].spec)
   else search()
 }
-defineExpose({ reset, addLevelAndSearch, rerunLast, setTimeRangeAndSearch })
+// AI 诊断建议「去查询」联动：关键字覆盖式填入主输入框并立即查询
+//（AI 给出的是精确目标词，追加式混入旧条件反而干扰）
+function runKeywordSearch(kw: string) {
+  keywords.value = kw
+  search()
+}
+defineExpose({ reset, addLevelAndSearch, rerunLast, setTimeRangeAndSearch, runKeywordSearch })
 
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Enter') search()

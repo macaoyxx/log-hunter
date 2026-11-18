@@ -6,6 +6,10 @@ export function AddFiles(arg1) {
   return window['go']['main']['App']['AddFiles'](arg1);
 }
 
+export function AiAuthRespond(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AiAuthRespond'](arg1, arg2, arg3);
+}
+
 export function AiDiagnose(arg1, arg2, arg3) {
   return window['go']['main']['App']['AiDiagnose'](arg1, arg2, arg3);
 }
@@ -16,6 +20,10 @@ export function AiFollowup(arg1, arg2, arg3, arg4, arg5) {
 
 export function AiPullModels(arg1) {
   return window['go']['main']['App']['AiPullModels'](arg1);
+}
+
+export function AiResetSession() {
+  return window['go']['main']['App']['AiResetSession']();
 }
 
 export function AiResolveRef(arg1, arg2) {

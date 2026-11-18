@@ -164,6 +164,7 @@ export namespace conf {
 	    effort?: string;
 	    ctxTokens?: number;
 	    maxOutTokens?: number;
+	    grantedDirs?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Conf(source);
@@ -179,6 +180,7 @@ export namespace conf {
 	        this.effort = source["effort"];
 	        this.ctxTokens = source["ctxTokens"];
 	        this.maxOutTokens = source["maxOutTokens"];
+	        this.grantedDirs = source["grantedDirs"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

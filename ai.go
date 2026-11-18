@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,11 +29,65 @@ func (a *App) initAI(dataDir string) {
 	}
 	a.aiConf = aiConf
 	a.aiSess = &diag.Session{}
+	a.aiAuthPending = make(map[string]chan diag.AuthResult)
 	a.aiDiag = &diag.Diagnoser{
 		Conf:    aiConf,
 		Tools:   a.aiToolset(),
 		Emit:    func(e diag.Event) { runtime.EventsEmit(a.ctx, "ai:event", e) },
 		DataDir: dataDir,
+		AskAuth: a.askSourceAuth, // 源码读取授权：弹卡并挂起等用户回执
+	}
+}
+
+// authWaitTimeout 单次授权征询的兜底等待上限（正常路径由 AiDiagnose/Followup 的
+// 10 分钟 ctx 先到；此处防 Background ctx 的调用方无限挂起）
+const authWaitTimeout = 15 * time.Minute
+
+// askSourceAuth 阻塞授权（编程 agent 标准模式）：注册回执通道 → 弹授权卡 →
+// 挂起等用户点击，回执到达后 read_source 立即继续执行。
+// 曾误诊「阻塞会死锁绑定队列」改非阻塞（发卡即返回未授权），实测两处皆坏：
+// 模型收到「稍后重试」提示后直接收尾放弃（点击授权已无下文）；且敏感文件
+// 路径把空回执当拒绝、卡未弹出已判死。真实机制：Wails 每条绑定调用经
+// `go dispatchMessage` 独立 goroutine 派发（v2.17 frontend.go:762），
+// 诊断在途时 CancelAi 一直可用即反证——阻塞等待完全可行
+func (a *App) askSourceAuth(ctx context.Context, target, reason string, sensitive bool) diag.AuthResult {
+	id := "auth-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	ch := make(chan diag.AuthResult, 1) // 带缓冲：回执先到/等待方退出都不阻塞投递方
+	a.aiAuthMu.Lock()
+	a.aiAuthPending[id] = ch
+	a.aiAuthMu.Unlock()
+	defer func() {
+		a.aiAuthMu.Lock()
+		delete(a.aiAuthPending, id)
+		a.aiAuthMu.Unlock()
+	}()
+	runtime.EventsEmit(a.ctx, "ai:auth", map[string]any{
+		"id": id, "path": target, "reason": reason, "sensitive": sensitive})
+	select {
+	case r := <-ch:
+		return r
+	case <-ctx.Done(): // 用户点了停止/整轮超时：按取消处理（diag 侧不登记拒绝）
+		return diag.AuthResult{}
+	case <-time.After(authWaitTimeout): // 用户长时间未响应：按拒绝处理
+		return diag.AuthResult{}
+	}
+}
+
+// AiAuthRespond 授权卡回执（前端按钮调用）：把用户决定投递给挂起中的 read_source。
+// 授权集的更新（会话 grant/deny、remember 持久化 ai.json）在 diag 层锁内完成——
+// 本方法只做回执转发；找不到等待方（本轮已取消/超时结束）返回 false
+func (a *App) AiAuthRespond(reqID string, allow, remember bool) bool {
+	a.aiAuthMu.Lock()
+	ch := a.aiAuthPending[reqID]
+	a.aiAuthMu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- diag.AuthResult{Allow: allow, Remember: remember}:
+		return true
+	default: // 通道已占用（重复点击）：按已送达处理
+		return true
 	}
 }
 
@@ -181,6 +236,12 @@ func (a *App) AiFollowup(profileID, model, effort, text string, images []string)
 
 // CancelAi 取消在途的 AI 请求（断整个 agent 循环）
 func (a *App) CancelAi() { a.aiSess.Cancel() }
+
+// AiResetSession 清空上下文重新开始（上下文被污染/换问题重开）：停止在途请求并清会话
+func (a *App) AiResetSession() {
+	a.aiSess.Cancel()
+	a.aiSess.Reset()
+}
 
 // AiSessionInfo 会话状态（前端重开面板时恢复历史：产出文档、基线、消息快照）。
 // 一律走 Snapshot 锁内快照——Docs/msgs 有并发写方，裸读是 data race

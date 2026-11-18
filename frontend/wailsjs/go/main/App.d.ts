@@ -7,11 +7,15 @@ import {appconf} from '../models';
 
 export function AddFiles(arg1:Array<string>):Promise<main.AddFilesResult>;
 
+export function AiAuthRespond(arg1:string,arg2:boolean,arg3:boolean):Promise<boolean>;
+
 export function AiDiagnose(arg1:string,arg2:string,arg3:string):Promise<main.AiReportOut>;
 
 export function AiFollowup(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<main.AiReportOut>;
 
 export function AiPullModels(arg1:string):Promise<Array<conf.Model>>;
+
+export function AiResetSession():Promise<void>;
 
 export function AiResolveRef(arg1:string,arg2:number):Promise<logscan.SideRow>;
 

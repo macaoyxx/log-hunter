@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -41,6 +42,11 @@ type App struct {
 	aiConf *conf.Store
 	aiDiag *diag.Diagnoser
 	aiSess *diag.Session
+
+	// 在途授权请求（reqID → 回执通道）：read_source 阻塞等用户点击授权卡，
+	// 点击经 AiAuthRespond 按 reqID 投递回执（锁内访问）
+	aiAuthMu      sync.Mutex
+	aiAuthPending map[string]chan diag.AuthResult
 }
 
 // NewApp 创建应用实例；配置存储打开失败降级为内存态（不阻断启动）

@@ -14,6 +14,7 @@ const props = defineProps<{
   selected: Set<number>
 }>()
 const emit = defineEmits<{
+  (e: 'close-error'): void
   (e: 'search', spec: main.QuerySpecJSON): void
   (e: 'cancel'): void
 }>()
@@ -402,7 +403,10 @@ const progPct = computed(() => {
       <div class="qprog-bar"><div class="qprog-fill" :style="{ width: progPct + '%' }"></div></div>
       <span class="qprog-text">正在扫描 {{ progPct.toFixed(0) }}% · 已找到 {{ (progress?.matched ?? 0).toLocaleString() }} 条</span>
     </div>
-    <div v-if="error" class="err">{{ error }}</div>
+    <div v-if="error" class="err">
+      <span class="err-text">{{ error }}</span>
+      <button class="err-x" title="关闭提示" @click="emit('close-error')"><AppIcon name="x" :size="10" /></button>
+    </div>
   </div>
 </template>
 
@@ -540,11 +544,15 @@ const progPct = computed(() => {
 .qprog-bar { flex: 1; height: 6px; background: var(--bg-panel); border-radius: 3px; overflow: hidden; }
 .qprog-fill { height: 100%; background: var(--accent-strong); transition: width .15s; }
 .qprog-text { color: var(--text-dim); font-size: 12px; flex: none; }
+.err-text { flex: 1; min-width: 0; }
+.err-x { background: none; border: none; color: inherit; opacity: .55; padding: 2px; flex: none; margin-left: auto; align-self: flex-start; }
+.err-x:hover { opacity: 1; border: none; }
 .err {
   color: var(--danger); font-size: 12px;
   background: var(--lvl-4-bg); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: 5px; padding: 6px 10px;
   white-space: pre-wrap;
+  display: flex; align-items: flex-start; gap: 6px;
 }
 
 .hist-empty { color: var(--text-faint); text-align: center; padding: 14px; font-size: 12px; }

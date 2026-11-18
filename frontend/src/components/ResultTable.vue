@@ -541,7 +541,7 @@ defineExpose({ jumpToIndex })
         </button>
         <button v-if="rowMenuCopied === 'row'" class="row-menu-item copied" disabled><AppIcon name="check" :size="12" />已复制</button>
         <button v-else class="row-menu-item" title="复制整行的完整原文（不受显示截断限制）" @click="copyRow"><AppIcon name="copy" :size="12" />复制整行</button>
-        <button class="row-menu-item" title="把选中文本（无选中则整行）作为追问发给 AI 诊断" @click="askRowAi"><AppIcon name="sparkles" :size="12" />问 AI 这行</button>
+        <button class="row-menu-item" :title="rowMenu.sel ? '把选中内容作为追问发给 AI 诊断' : '把这一行（带文件:行号锚点）作为追问发给 AI 诊断'" @click="askRowAi"><AppIcon name="sparkles" :size="12" />{{ rowMenu.sel ? '问 AI' : '问 AI 这行' }}</button>
       </div>
     </div>
   </div>

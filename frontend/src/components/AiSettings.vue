@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// AI 诊断设置（模态）：厂商配置 CRUD（名称/BaseURL/APIKey/模型列表）、
-// 模型能力三属性（ctx 窗口 / vision 视觉 / maxOut 响应上限）行内编辑、
-// 主/视觉厂商默认选择（跨厂商组合）、思考等级与全局默认。
+// AI 诊断设置（模态 · 主从双栏）：顶部全局装备条（主/视觉通道、思考档、默认窗口）+
+// 左侧档案导航列 + 右侧详情编辑（端点/密钥/模型能力表/拉取/测试），目录授权独立页签。
+// 厂商配置 CRUD、模型能力三属性（ctx/vision/maxOut）语义不变；
 // 编辑走本地 draft，显式保存；「拉取模型/测试连接」操作已保存厂商（点击时先静默保存 draft）
 import { computed, onMounted, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
@@ -25,7 +25,10 @@ const draft = ref(cloneConf(props.config))
 // App 层旧快照，不重拉会出现「明明记住了却显示暂无授权」
 onMounted(() => {
   GetAiConfig().then((c: conf.Conf) => {
-    if (c.profiles) draft.value = cloneConf(c)
+    if (c.profiles) {
+      draft.value = cloneConf(c)
+      initAfterLoad()
+    }
   }).catch(() => {})
 })
 const saving = ref(false)
@@ -33,11 +36,24 @@ const saveErr = ref('')
 const pullState = ref<Record<string, string>>({}) // 厂商 id → 拉取状态
 const testState = ref<Record<string, string>>({}) // 厂商 id → 测试结果
 
-const expanded = ref<string | null>(draft.value.profiles[0]?.id ?? null)
+// 草稿脏标记（标题栏「未保存」点）：与打开时快照逐字对比
+let baselineJSON = JSON.stringify(draft.value)
+const dirty = computed(() => JSON.stringify(draft.value) !== baselineJSON)
+function initAfterLoad() {
+  baselineJSON = JSON.stringify(draft.value)
+  // 重拉后档案可能已变：选中项失效则回落到第一个
+  if (!draft.value.profiles.some(p => p.id === sel.value)) {
+    sel.value = draft.value.profiles[0]?.id ?? null
+  }
+}
+
+// 主从导航：左侧厂商列表（只有厂商——授权目录是全局配置，独立底部分区，不混列）
+const sel = ref<string | null>(draft.value.profiles[0]?.id ?? null)
+const cur = computed(() => draft.value.profiles.find(p => p.id === sel.value) ?? null)
+const grantsOpen = ref(false) // 底部授权分区折叠态
 
 function addProfile() {
-  // 新增即分配不冲突 id（与后端 Normalize 的 p<N> 规则一致）：拉取/测试会先静默保存
-  // 再按 id 找档案，id 为空时后端补了新 id 而前端还拿着空串，必报「档案未配置端点」
+  // 新增即分配不冲突 id（与后端 Normalize 的 p<N> 规则一致）：draft 内需要稳定身份
   let n = draft.value.profiles.length + 1
   while (draft.value.profiles.some(p => p.id === 'p' + n)) n++
   const p = conf.Profile.createFrom({
@@ -45,18 +61,27 @@ function addProfile() {
     baseUrl: '', apiKey: '', models: [],
   })
   draft.value.profiles.push(p)
-  expanded.value = p.id
+  sel.value = p.id
 }
-function removeProfile(i: number) {
+function removeProfile(id: string) {
+  const i = draft.value.profiles.findIndex(p => p.id === id)
+  if (i < 0) return
   const p = draft.value.profiles[i]
   draft.value.profiles.splice(i, 1)
   if (draft.value.activeProfile === p.id) { draft.value.activeProfile = ''; draft.value.activeModel = '' }
   if (draft.value.visionProfile === p.id) { draft.value.visionProfile = ''; draft.value.visionModel = '' }
+  if (sel.value === p.id) sel.value = draft.value.profiles[Math.min(i, draft.value.profiles.length - 1)]?.id ?? null
 }
 function addModel(p: conf.Profile) {
   p.models.push(conf.Model.createFrom({ name: 'model-name', ctx: 0, vision: false, maxOut: 0 }))
 }
 function profileById(id: string | undefined) { return draft.value.profiles.find(p => p.id === id) }
+// 档案状态灯：测试连通=绿 / 已配端点未测=蓝 / 未配置=灰
+function ledOf(p: conf.Profile): string {
+  if ((testState.value[p.id] ?? '').startsWith('✓')) return 'ok'
+  if (p.baseUrl) return 'acc'
+  return ''
+}
 
 // 保存 draft；返回是否成功
 async function persist(): Promise<boolean> {
@@ -64,6 +89,7 @@ async function persist(): Promise<boolean> {
   saveErr.value = ''
   try {
     await SetAiConfig(draft.value)
+    baselineJSON = JSON.stringify(draft.value)
     return true
   } catch (e) {
     saveErr.value = String(e)
@@ -75,12 +101,11 @@ async function persist(): Promise<boolean> {
 async function save() {
   if (await persist()) { emit('saved'); emit('close') }
 }
-// 拉取模型/测试连接前先保存（这两操作作用于已持久化厂商）
+// 拉取/测试直接作用于草稿档案（后端按传入档案执行，不落盘）——没点「保存」就不会进 ai.json
 async function pullModels(p: conf.Profile) {
   pullState.value[p.id] = '拉取中…'
-  if (!(await persist())) { pullState.value[p.id] = '保存失败'; return }
   try {
-    const models = await AiPullModels(p.id)
+    const models = await AiPullModels(p)
     p.models = models
     pullState.value[p.id] = `已拉取 ${models.length} 个模型`
   } catch (e) {
@@ -91,9 +116,8 @@ async function testConn(p: conf.Profile) {
   const model = p.models[0]?.name || ''
   if (!model) { testState.value[p.id] = '请先添加/拉取模型'; return }
   testState.value[p.id] = '测试中…'
-  if (!(await persist())) { testState.value[p.id] = '保存失败'; return }
   try {
-    const out = await TestAiConn(p.id, model)
+    const out = await TestAiConn(p, model)
     testState.value[p.id] = '✓ 连通（回复：' + out.slice(0, 24) + '）'
   } catch (e) {
     testState.value[p.id] = '✕ ' + String(e)
@@ -122,116 +146,134 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
   <div class="st-mask" @click.self="emit('close')">
     <div class="st-dlg">
       <div class="st-head">
-        <span class="st-title"><AppIcon name="sparkles" :size="14" />AI 诊断设置</span>
+        <span class="st-title"><AppIcon name="sparkles" :size="14" />AI 专家装备</span>
+        <span v-if="dirty" class="st-dirty">草稿未保存</span>
         <button class="st-x" title="关闭" @click="emit('close')"><AppIcon name="x" :size="12" /></button>
       </div>
 
-      <div class="st-body">
-        <!-- 厂商列表 -->
-        <div class="st-sec">模型厂商（OpenAI 兼容：DeepSeek / GLM / Ollama /v1 / 自建网关）</div>
-        <div v-for="(p, pi) in draft.profiles" :key="pi" class="st-card" :class="{ open: expanded === p.id }">
-          <button class="st-card-head" @click="expanded = expanded === p.id ? null : p.id">
-            <AppIcon name="chevron-right" :size="12" class="st-exp" :class="{ flip: expanded === p.id }" />
-            <input v-model="p.name" class="st-name" placeholder="厂商名（如 DeepSeek）" @click.stop />
-            <span class="st-meta">{{ p.baseUrl || '未配置地址' }} · {{ p.models.length }} 模型</span>
-          </button>
-          <div v-if="expanded === p.id" class="st-card-body" @click.stop>
-            <div class="st-grid">
-              <label class="st-field span2">
-                <span>Base URL</span>
-                <input v-model="p.baseUrl" placeholder="https://api.deepseek.com/v1" />
-              </label>
-              <label class="st-field span2">
-                <span>API Key（留空 = 不鉴权，Ollama/自建网关）</span>
-                <input v-model="p.apiKey" type="password" placeholder="sk-…" autocomplete="off" />
-              </label>
-            </div>
-            <div class="st-sub">模型（窗口/上限留空 = 用全局默认 {{ (((draft.ctxTokens ?? 1048576)/1048576).toFixed(1).replace(/\.0$/, '')) }}M / {{ draft.maxOutTokens ?? 8192 }} · 视觉=支持图片，vision/vl 类自动勾选）</div>
-            <div v-for="(m, mi) in p.models" :key="mi" class="st-model">
-              <input v-model="m.name" class="st-m-name" placeholder="模型名" />
-              <input v-model.number="m.ctx" class="st-m-num" type="number" min="0" title="上下文窗口（token，留空用全局默认）" :placeholder="String(draft.ctxTokens)" />
-              <label class="st-m-vis" title="支持图片输入（纯文本模型贴图时走视觉厂商转述）">
-                <input v-model="m.vision" type="checkbox" />视觉
-              </label>
-              <input v-model.number="m.maxOut" class="st-m-num" type="number" min="0" title="单次响应上限（留空用全局默认）" :placeholder="String(draft.maxOutTokens)" />
-              <button class="st-m-del" title="移除模型" @click="p.models.splice(mi, 1)"><AppIcon name="x" :size="10" /></button>
-            </div>
-            <div class="st-rowbtns">
-              <button @click="addModel(p)"><AppIcon name="plus" :size="11" />手填模型</button>
-              <button @click="pullModels(p)"><AppIcon name="refresh-cw" :size="11" />拉取模型</button>
-              <button @click="testConn(p)"><AppIcon name="zap" :size="11" />测试连接</button>
-              <button class="danger" @click="removeProfile(pi)"><AppIcon name="trash-2" :size="11" />删除厂商</button>
-            </div>
-            <div v-if="pullState[p.id]" class="st-state">{{ pullState[p.id] }}</div>
-            <div v-if="testState[p.id]" class="st-state">{{ testState[p.id] }}</div>
-          </div>
-        </div>
-        <button class="st-add" @click="addProfile"><AppIcon name="plus" :size="12" />添加厂商</button>
-
-        <!-- 默认选择与全局 -->
-        <div class="st-sec">默认选择</div>
-        <div class="st-grid">
-          <label class="st-field">
-            <span>主模型厂商</span>
+      <!-- 全局装备条：一次看全「谁在对话/谁看图/思考多深/纸有多大」 -->
+      <div class="st-global">
+        <label class="st-g">
+          <span>主通道（对话）</span>
+          <div class="st-g-pair">
             <select v-model="draft.activeProfile">
-              <option value="">（未选）</option>
+              <option value="">（未选厂商）</option>
               <option v-for="p in draft.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
-          </label>
-          <label class="st-field">
-            <span>主模型（可留空，会话中选）</span>
             <select v-model="draft.activeModel">
-              <option value="">（不指定）</option>
+              <option value="">（不指定模型）</option>
               <option v-for="m in profileById(draft.activeProfile)?.models ?? []" :key="m.name" :value="m.name">
                 {{ m.name }}{{ m.vision ? ' ◉' : '' }}
               </option>
             </select>
-          </label>
-          <label class="st-field">
-            <span>视觉厂商（可与主厂商不同）</span>
+          </div>
+        </label>
+        <label class="st-g">
+          <span>视觉通道（贴图，可与主通道不同厂商）</span>
+          <div class="st-g-pair">
             <select v-model="draft.visionProfile">
               <option value="">（不配置）</option>
               <option v-for="p in draft.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
-          </label>
-          <label class="st-field">
-            <span>视觉模型（贴图经它转述给纯文本主模型）</span>
             <select v-model="draft.visionModel">
               <option value="">（不指定）</option>
               <option v-for="o in visionOptions" :key="o.id" :value="o.name">{{ o.label }}</option>
             </select>
-          </label>
-          <label class="st-field">
-            <span>思考等级（默认不发该字段）</span>
-            <select v-model="draft.effort">
-              <option value="">跟随端点默认</option>
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
-            </select>
-          </label>
-          <label class="st-field">
-            <span>全局默认窗口 / 响应（token）</span>
-            <div class="st-pair">
-              <input v-model.number="draft.ctxTokens" type="number" min="1000" title="ctxTokens" />
-              <input v-model.number="draft.maxOutTokens" type="number" min="256" title="maxOutTokens" />
+          </div>
+        </label>
+        <label class="st-g st-g-s">
+          <span>思考等级</span>
+          <select v-model="draft.effort">
+            <option value="">默认</option>
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+          </select>
+        </label>
+        <label class="st-g st-g-s">
+          <span>全局默认（窗口 / 响应）</span>
+          <div class="st-g-pair">
+            <input v-model.number="draft.ctxTokens" type="number" min="1000" title="上下文窗口（token）" />
+            <input v-model.number="draft.maxOutTokens" type="number" min="256" title="响应上限（token）" />
+          </div>
+        </label>
+      </div>
+
+      <!-- 主从双栏 -->
+      <div class="st-split">
+        <div class="st-rail">
+          <div class="st-rail-cap">模型厂商</div>
+          <button v-for="p in draft.profiles" :key="p.id" class="st-rail-item" :class="{ on: sel === p.id }" @click="sel = p.id">
+            <i class="led" :class="ledOf(p)"></i>
+            <span class="nm">{{ p.name }}</span>
+            <span class="cnt">{{ p.models.length }}</span>
+          </button>
+          <button class="st-rail-add" @click="addProfile"><AppIcon name="plus" :size="11" />添加厂商</button>
+        </div>
+
+        <div class="st-detail">
+          <template v-if="cur">
+            <div class="st-d-row">
+              <label class="st-f"><span>厂商名称</span>
+                <input v-model="cur.name" placeholder="如 DeepSeek" /></label>
+              <label class="st-f st-f-wide"><span>端点地址（OpenAI 兼容 /v1）</span>
+                <input v-model="cur.baseUrl" class="mono-in" placeholder="https://api.deepseek.com/v1" /></label>
+              <label class="st-f"><span>API Key（留空 = 不鉴权）</span>
+                <input v-model="cur.apiKey" type="password" placeholder="sk-…" autocomplete="off" /></label>
             </div>
-          </label>
-        </div>
-        <div class="st-sec">目录访问授权（AI 诊断时授予的目录，整棵子树有效）
-          <button v-if="draft.grantedDirs?.length" class="st-clear-all danger" @click="clearAllGrants">一键清空</button>
-        </div>
-        <div v-if="draft.grantedDirs?.length" class="st-grants">
-          <div v-for="g in [...draft.grantedDirs]" :key="g" class="st-grant">
-            <span class="st-grant-p" :title="g">{{ g }}</span>
-            <button class="st-grant-x" title="移除授权" @click="removeGrant(g)"><AppIcon name="x" :size="10" /></button>
+
+            <div class="st-d-scroll">
+              <div class="st-sub">窗口/上限留空 = 用全局默认（{{ (((draft.ctxTokens ?? 1048576) / 1048576).toFixed(1).replace(/\.0$/, '')) }}M / {{ draft.maxOutTokens ?? 8192 }}）；视觉 = 支持图片输入，vision/vl 类自动勾选</div>
+              <div v-for="(m, mi) in cur.models" :key="mi" class="st-model">
+                <input v-model="m.name" class="st-m-name mono-in" placeholder="模型名" />
+                <input v-model.number="m.ctx" class="st-m-num mono-in" type="number" min="0" title="上下文窗口（token，留空用全局默认）" :placeholder="String(draft.ctxTokens)" />
+                <label class="st-m-vis" title="支持图片输入（纯文本模型贴图时走视觉厂商转述）">
+                  <input v-model="m.vision" type="checkbox" />视觉
+                </label>
+                <input v-model.number="m.maxOut" class="st-m-num mono-in" type="number" min="0" title="单次响应上限（留空用全局默认）" :placeholder="String(draft.maxOutTokens)" />
+                <button class="st-m-del" title="移除模型" @click="cur.models.splice(mi, 1)"><AppIcon name="x" :size="10" /></button>
+              </div>
+              <div class="st-rowbtns">
+                <button @click="addModel(cur)"><AppIcon name="plus" :size="11" />手填模型</button>
+                <button @click="pullModels(cur)"><AppIcon name="download" :size="11" />从端点拉取模型</button>
+                <button @click="testConn(cur)"><AppIcon name="zap" :size="11" />测试连接</button>
+                <button class="danger" @click="removeProfile(cur.id)"><AppIcon name="x" :size="11" />删除厂商</button>
+              </div>
+              <div v-if="pullState[cur.id]" class="st-state">{{ pullState[cur.id] }}</div>
+              <div v-if="testState[cur.id]" class="st-state">{{ testState[cur.id] }}</div>
+            </div>
+          </template>
+
+          <div v-else class="st-d-empty">
+            <AppIcon name="info" :size="16" />
+            <span>左侧选择或添加一个厂商开始配置</span>
           </div>
         </div>
-        <div v-else class="st-grants-empty">暂无持久授权（诊断中点「允许并记住」会出现在这里）</div>
-        <div class="st-note">配置存 exe 同级 data/ai.json（明文，独立于 config.json）；模型级能力优先生效，留空回落全局默认。</div>
+      </div>
+
+      <!-- 目录访问授权：全局配置独立分区（不与厂商混排——两类东西两处放） -->
+      <div class="st-gz">
+        <button class="st-gz-head" @click="grantsOpen = !grantsOpen">
+          <AppIcon name="folder" :size="12" />
+          <span class="st-gz-t">目录访问授权</span>
+          <span class="st-gz-cnt">{{ draft.grantedDirs?.length || 0 }}</span>
+          <span class="st-gz-hint">全局配置 · AI 读源码须授权（整棵子树有效），与厂商无关</span>
+          <AppIcon class="st-gz-chev" :name="grantsOpen ? 'chevron-down' : 'chevron-right'" :size="12" />
+        </button>
+        <div v-if="grantsOpen" class="st-gz-body">
+          <div v-if="draft.grantedDirs?.length" class="st-gz-list">
+            <span v-for="g in [...draft.grantedDirs]" :key="g" class="st-gz-chip">
+              <span class="st-gz-p" :title="g">{{ g }}</span>
+              <button title="移除授权" @click="removeGrant(g)"><AppIcon name="x" :size="10" /></button>
+            </span>
+            <button class="danger st-gz-clear" @click="clearAllGrants">一键清空</button>
+          </div>
+          <div v-else class="st-gz-empty">暂无持久授权——诊断中点「允许并记住」会出现在这里</div>
+        </div>
       </div>
 
       <div class="st-foot">
+        <span class="st-note">存 exe 同级 data/ai.json（明文）· 模型级能力优先，留空回落全局默认</span>
         <span v-if="saveErr" class="st-err">{{ saveErr }}</span>
         <button class="ghost" @click="emit('close')">取消</button>
         <button class="primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
@@ -251,8 +293,8 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
   justify-content: center;
 }
 .st-dlg {
-  width: min(620px, 92vw);
-  max-height: 86vh;
+  width: min(780px, 94vw);
+  max-height: 88vh;
   display: flex;
   flex-direction: column;
   background: var(--bg-float);
@@ -270,6 +312,13 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
 }
 .st-title { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600; }
 .st-title :deep(svg) { color: var(--accent-strong); }
+.st-dirty {
+  font-size: 10px;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
 .st-x {
   margin-left: auto;
   background: none;
@@ -279,76 +328,94 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
 }
 .st-x:hover { color: var(--text); border: none; background: var(--bg-hover); }
 
-.st-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; }
-.st-sec {
+/* 全局装备条 */
+.st-global {
+  flex: none;
+  display: flex;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-wrap: wrap;
+}
+.st-g { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--text-faint); flex: 1 1 180px; }
+.st-g-s { flex: 0 1 130px; }
+.st-g-pair { display: flex; gap: 5px; }
+.st-g-pair select, .st-g-pair input { flex: 1; min-width: 0; font-size: 11.5px; padding: 4px 6px; }
+.st-g select { font-size: 11.5px; padding: 4px 6px; }
+
+/* 主从双栏 */
+.st-split { flex: 1; min-height: 0; display: flex; }
+.st-rail {
+  flex: none;
+  width: 176px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+}
+.st-rail-cap {
   font-size: 10px;
   letter-spacing: .09em;
   text-transform: uppercase;
   color: var(--text-faint);
   font-weight: 600;
-  padding: 8px 2px 6px;
+  padding: 2px 8px 6px;
 }
-.st-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-bottom: 6px;
-  overflow: hidden;
-}
-.st-card.open { border-color: var(--border-strong); }
-.st-card-head {
+.st-rail-item {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
   justify-content: flex-start;
-  padding: 7px 10px;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  text-align: left;
-}
-.st-card-head:hover { background: var(--bg-hover); border: none; }
-.st-exp { flex: none; color: var(--text-faint); transition: transform .15s; }
-.st-exp.flip { transform: rotate(90deg); }
-.st-name {
-  width: 130px;
+  padding: 7px 9px;
   font-size: 12px;
-  padding: 2px 6px;
-  background: transparent;
-  border-color: transparent;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
 }
-.st-name:hover, .st-name:focus { border-color: var(--border-strong); background: var(--bg-panel); }
-.st-meta {
-  font-family: var(--mono);
-  font-size: 10px;
+.st-rail-item:hover { background: var(--bg-hover); border-color: transparent; }
+.st-rail-item.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--text); }
+.st-rail-item .led { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+.st-rail-item .led.ok { background: var(--ok); }
+.st-rail-item .led.acc { background: var(--accent-strong); }
+.st-rail-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.st-rail-item .cnt { flex: none; font-size: 10px; color: var(--text-faint); }
+.st-rail-add {
+  margin-top: auto;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 7px;
+  font-size: 11.5px;
   color: var(--text-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  gap: 5px;
 }
-.st-card-body { padding: 4px 12px 10px; border-top: 1px solid var(--border); }
-.st-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 8px 0 2px; }
-.st-field { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-faint); }
-.st-field.span2 { grid-column: span 2; }
-.st-field input, .st-field select { font-size: 12px; padding: 4px 8px; }
-.st-pair { display: flex; gap: 6px; }
-.st-pair input { width: 50%; font-family: var(--mono); font-size: 11.5px; }
-.st-sub { font-size: 10px; color: var(--text-faint); padding: 8px 2px 4px; }
-.st-model {
+.st-rail-add:hover { color: var(--accent-strong); border-color: var(--accent-line); background: none; }
+
+.st-detail { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.st-d-row { flex: none; display: flex; gap: 8px; padding: 12px 14px 8px; flex-wrap: wrap; }
+.st-f { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--text-faint); flex: 1 1 140px; }
+.st-f-wide { flex: 1.6 1 220px; }
+.st-f input { font-size: 12px; padding: 4px 8px; }
+.mono-in { font-family: var(--mono); }
+.st-d-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 14px 12px; }
+.st-d-empty {
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 40px 0;
 }
-.st-m-name { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; padding: 3px 8px; }
-.st-m-num {
-  flex: none;
-  width: 88px;
-  font-family: var(--mono);
-  font-size: 11px;
-  padding: 3px 6px;
-  text-align: right;
-}
+.st-sub { font-size: 10px; color: var(--text-faint); padding: 2px 2px 8px; }
+.st-model { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.st-m-name { flex: 1; min-width: 0; font-size: 11.5px; padding: 3px 8px; }
+.st-m-num { flex: none; width: 88px; font-size: 11px; padding: 3px 6px; text-align: right; }
 .st-m-vis {
   flex: none;
   display: inline-flex;
@@ -360,50 +427,66 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
   cursor: pointer;
 }
 .st-m-vis input { accent-color: var(--accent-strong); }
-.st-m-del {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  justify-content: center;
-  color: var(--text-faint);
-}
+.st-m-del { flex: none; width: 22px; height: 22px; padding: 0; justify-content: center; color: var(--text-faint); }
 .st-m-del:hover { color: var(--danger); border-color: var(--danger); }
 .st-rowbtns { display: flex; gap: 6px; padding-top: 6px; flex-wrap: wrap; }
 .st-rowbtns button { font-size: 11px; padding: 3px 9px; gap: 4px; }
 .st-state { font-size: 10.5px; color: var(--text-faint); padding-top: 5px; word-break: break-all; }
-.st-add { font-size: 11.5px; padding: 4px 10px; color: var(--text-dim); }
-.st-add:hover { color: var(--accent-strong); border-color: var(--accent-line); }
 
-.st-clear-all { margin-left: auto; font-size: 10px; padding: 1px 8px; }
-.st-grants { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
-.st-grant { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px 6px 3px 10px; }
-.st-grant-p { flex: 1; min-width: 0; font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.st-grant-x { flex: none; width: 20px; height: 20px; padding: 0; justify-content: center; color: var(--text-faint); }
-.st-grant-x:hover { color: var(--danger); border-color: var(--danger); }
-.st-grants-empty { font-size: 11px; color: var(--text-faint); padding: 4px 2px 8px; }
-.st-note {
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 9.5px;
-  color: var(--text-faint);
+/* 目录授权分区（全局独立）：与厂商区以边线相隔，默认折叠 */
+.st-gz { flex: none; border-top: 1px solid var(--border); background: var(--bg-panel); }
+.st-gz-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  justify-content: flex-start;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  font-size: 12px;
+  color: var(--text);
 }
+.st-gz-head:hover { background: var(--bg-hover); border: none; }
+.st-gz-head :deep(svg) { color: var(--text-faint); }
+.st-gz-t { font-weight: 600; }
+.st-gz-cnt { font-size: 10px; color: var(--text-faint); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; }
+.st-gz-hint { flex: 1; min-width: 0; font-size: 10px; color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-gz-chev { margin-left: auto; color: var(--text-faint); }
+.st-gz-body { padding: 0 16px 10px; }
+.st-gz-list { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.st-gz-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px 3px 10px;
+  background: var(--bg-elev);
+}
+.st-gz-p { font-family: var(--mono); font-size: 10.5px; color: var(--text-dim);
+  max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-gz-chip button { width: 18px; height: 18px; padding: 0; justify-content: center;
+  color: var(--text-faint); background: none; border: none; }
+.st-gz-chip button:hover { color: var(--danger); }
+.st-gz-clear { font-size: 10.5px; padding: 2px 10px; }
+.st-gz-empty { font-size: 11px; color: var(--text-faint); padding: 2px 2px 4px; }
 
 .st-foot {
   flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  justify-content: flex-end;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
 }
+.st-note { margin-right: auto; font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); }
 .st-err {
-  margin-right: auto;
   font-size: 11px;
   color: var(--danger);
+  max-width: 300px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

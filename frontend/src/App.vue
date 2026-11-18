@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff, BrowserOpenURL } from '../wailsjs/runtime/runtime'
 import {
   AddFiles, ClearAll, ListFiles, Query, Cancel, RemoveFile,
   GetVersion, CheckUpdate, StartUpdate, Restart, GetConfig, SetThemeSettings, SetMerged,
   ReportStartupReady, LastStartupCost, GetIndexByTime,
+  ClusterResults, GetAiConfig,
 } from '../wailsjs/go/main/App'
-import { logscan, main } from '../wailsjs/go/models'
+import { conf, logscan, main } from '../wailsjs/go/models'
 import SideRail from './components/SideRail.vue'
 import appicon from './assets/appicon.png'
 import AppIcon from './components/AppIcon.vue'
@@ -15,6 +16,9 @@ import QueryBar from './components/QueryBar.vue'
 import TimeHistogram from './components/TimeHistogram.vue'
 import ResultTable from './components/ResultTable.vue'
 import ContextPanel from './components/ContextPanel.vue'
+import ClusterPanel from './components/ClusterPanel.vue'
+import AiPanel from './components/AiPanel.vue'
+import AiSettings from './components/AiSettings.vue'
 import { DEFAULT_PALETTE, PALETTE_IDS, type Appearance, type PaletteId } from './theme'
 
 // ---------- 全局状态 ----------
@@ -44,6 +48,16 @@ const hlRegex = ref('')
 
 // 上下文侧滑面板
 const ctxTarget = ref<{ fileId: number; offset: number } | null>(null)
+
+// 错误聚类面板（结果区上方横条带）与 AI 专家会话（右缘侧栏列）
+const clusterOpen = ref(false)
+const clusterReport = ref<logscan.ClusterReport | null>(null)
+const clustering = ref(false)
+const clusterProg = ref<{ done: number; total: number } | null>(null)
+const aiOpen = ref(false)
+const aiSettingsOpen = ref(false)
+const aiConfig = ref<conf.Conf>(conf.Conf.createFrom({ profiles: [] }))
+const aiPanelRef = ref<InstanceType<typeof AiPanel> | null>(null)
 
 const queryBarRef = ref<InstanceType<typeof QueryBar> | null>(null)
 const resultTableRef = ref<InstanceType<typeof ResultTable> | null>(null)
@@ -190,11 +204,20 @@ function onQueryProgress(p: any) {
 function onUpdateProgress(p: any) {
   updProgress.value = { received: p.received ?? 0, total: p.total ?? 0 }
 }
+function onClusterProgress(p: any) {
+  clusterProg.value = { done: p.done ?? 0, total: p.total ?? 0 }
+}
+// AI 专家事件转发给面板（流式增量/取证步骤/产出文档）
+function onAiEvent(e: any) {
+  aiPanelRef.value?.onEvent(e)
+}
 
 onMounted(() => {
   EventsOn('files:progress', onFileProgress)
   EventsOn('query:progress', onQueryProgress)
   EventsOn('update:progress', onUpdateProgress)
+  EventsOn('cluster:progress', onClusterProgress)
+  EventsOn('ai:event', onAiEvent)
   // 拖放必须经 OnFileDrop 正规注册：其内部才会挂 dragover/drop 监听（preventDefault
   // 允许放下）并接通 Windows 的文件路径桥接；此前直接 EventsOn('wails:file-drop')
   // 事件链从未接通，拖拽从未生效。useDropTarget=false：窗口任意位置都可放
@@ -227,6 +250,8 @@ onMounted(() => {
       SetThemeSettings(themePref.value, palettePref.value).catch(() => {})
     }
   }).catch(() => { /* 配置读取失败维持 localStorage 现值，不阻断 */ })
+  // AI 诊断配置（档案/默认选择；未配置=功能入口引导设置）
+  refreshAiConfig()
   // 启动收尾：界面就绪上报（后端显示窗口 + 写启动耗时埋点）、关于弹窗启动耗时
   ReportStartupReady().catch(() => {})
   LastStartupCost().then(s => { aboutStartup.value = s }).catch(() => {})
@@ -235,6 +260,8 @@ onUnmounted(() => {
   EventsOff('files:progress')
   EventsOff('query:progress')
   EventsOff('update:progress')
+  EventsOff('cluster:progress')
+  EventsOff('ai:event')
   OnFileDropOff()
   themeMedia.removeEventListener('change', onSystemThemeChange)
 })
@@ -350,6 +377,8 @@ async function runQuery(spec: main.QuerySpecJSON) {
   queryProg.value = null
   stats.value = null
   ctxTarget.value = null
+  clusterOpen.value = false // 结果集口径变化，旧聚类作废（重开即重聚）
+  clusterReport.value = null
   hlKeywords.value = [...(spec.keywords ?? [])]
   hlRegex.value = spec.regex ?? ''
   try {
@@ -405,10 +434,43 @@ function openContext(fileId: number, offset: number) {
   if (!fileNameMap.value.has(fileId)) return // 数据未就绪不打开，避免“文件不存在”
   ctxTarget.value = { fileId, offset }
 }
+
+// ---------- 聚类 / AI 诊断 ----------
+function openCluster() {
+  if (!stats.value || stats.value.total === 0) { queryError.value = '请先查询出结果再聚类'; return }
+  clusterOpen.value = true
+  clustering.value = true
+  clusterReport.value = null
+  ClusterResults().then(r => { clusterReport.value = r }).catch(e => {
+    queryError.value = String(e)
+    clusterOpen.value = false
+  }).finally(() => { clustering.value = false; clusterProg.value = null })
+}
+// 聚类面板「AI 诊断」：打开专家侧栏；未配置任何档案则引导先配置
+function openAiDiagnose() {
+  aiOpen.value = true
+  if (!aiConfig.value.profiles.length) aiSettingsOpen.value = true
+}
+// 打开 AI 设置（设置菜单项；内联多语句 handler 的赋值在部分场景不生效，收敛为方法）
+function openAiSettings() {
+  themePopRef.value?.close()
+  aiSettingsOpen.value = true
+}
+// 右键「问 AI」：打开侧栏并预填追问文本（面板在途请求时不打扰）
+function onAskAi(text: string) {
+  aiOpen.value = true
+  nextTick(() => aiPanelRef.value?.prefill(text))
+}
+function refreshAiConfig() {
+  GetAiConfig().then(c => {
+    if (!c.profiles) c.profiles = [] // 后端 nil 切片序列化为 null 的兜底
+    aiConfig.value = c
+  }).catch(() => {})
+}
 </script>
 
 <template>
-  <div class="app">
+  <div class="app" :class="{ 'ai-open': aiOpen }">
     <SideRail
       :files="files" :selected="selected" :loading="loadingFiles" :progress="fileProg" :file-total="fileTotal"
       :stats="stats" :querying="querying" :query-progress="queryProg" :collapsed="railCollapsed"
@@ -427,6 +489,10 @@ function openContext(fileId: number, offset: number) {
             <ThemePopover ref="themePopRef" :appearance="themePref" :palette="palettePref"
               @set-appearance="setAppearance" @set-palette="setPalette" @closed="onSettingsClosed">
               <template #menu>
+                <button class="mi" @click="openAiSettings">
+                  <span class="ico"><AppIcon name="sparkles" :size="13" /></span>
+                  <span class="lab"><span>AI 设置</span><span class="sub">端点档案 · 模型 · 视觉</span></span>
+                </button>
                 <button class="mi" @click="doCheckUpdate">
                   <span class="ico"><AppIcon name="refresh-cw" :size="13" /></span>
                   <span class="lab"><span>检查更新</span><span class="sub">GitHub Releases</span></span>
@@ -463,6 +529,13 @@ function openContext(fileId: number, offset: number) {
         <button class="notice-x" title="关闭提示" @click="fileNotice = ''"><AppIcon name="x" :size="11" /></button>
       </div>
       <TimeHistogram v-if="stats && hasTimeSelected" :stats="stats" :merged="mergedMode" @brush="onHistBrush" @jump="onHistJump" />
+      <ClusterPanel v-if="clusterOpen" :report="clusterReport" :clustering="clustering"
+        :progress="clusterProg" :ai-ready="aiConfig.profiles.length > 0"
+        @close="clusterOpen = false"
+        @jump="(i: number) => resultTableRef?.jumpToIndex(i)"
+        @open-context="openContext"
+        @ai-diagnose="openAiDiagnose"
+        @open-settings="aiSettingsOpen = true" />
       <ResultTable
         ref="resultTableRef"
         :stats="stats" :querying="querying" :progress="queryProg"
@@ -470,13 +543,26 @@ function openContext(fileId: number, offset: number) {
         :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"
         :merged="mergedMode" :merging="merging" :no-time-names="noTimeNames"
         @open-context="openContext" @level-click="levelClick" @toggle-merged="setMerged"
+        @cluster="openCluster" @ask-ai="onAskAi"
       />
       <ContextPanel v-if="ctxTarget" :target="ctxTarget" :file-name="fileNameMap.get(ctxTarget.fileId)!"
         :highlight-keywords="hlKeywords" :highlight-regex="hlRegex"
         @close="ctxTarget = null"
-        @jump="(off: number) => { if (ctxTarget) ctxTarget = { fileId: ctxTarget.fileId, offset: off } }" />
+        @jump="(off: number) => { if (ctxTarget) ctxTarget = { fileId: ctxTarget.fileId, offset: off } }"
+        @ask-ai="onAskAi" />
     </div>
+    <!-- AI 专家侧栏列（占布局非浮层：引用跳转时结果表仍可见） -->
+    <AiPanel v-if="aiOpen" ref="aiPanelRef" :config="aiConfig" :stats-total="stats?.total ?? 0"
+      @close="aiOpen = false"
+      @jump="(i: number) => resultTableRef?.jumpToIndex(i)"
+      @open-context="openContext"
+      @run-query="(kw: string) => queryBarRef?.runKeywordSearch(kw)"
+      @open-settings="aiSettingsOpen = true" />
   </div>
+
+  <!-- AI 诊断设置模态 -->
+  <AiSettings v-if="aiSettingsOpen" :config="aiConfig"
+    @close="aiSettingsOpen = false" @saved="refreshAiConfig" />
 
   <!-- 关于弹窗 -->
   <div v-if="aboutOpen" class="about-mask" @click.self="aboutOpen = false">
@@ -534,10 +620,16 @@ function openContext(fileId: number, offset: number) {
 
 <style scoped>
 /* 指挥舱骨架：左侧指挥轨 + 右侧主区（指令条 → 提示条 → 结果表） */
+/* AI 侧栏打开时：上下文面板（fixed 贴视口右缘）让位给 AI 列——
+   不让位则上下文面板整片盖在 AI 面板上（右滑浮层与布局列同占右缘） */
 .app {
+  --ctx-right: 0px;
   display: flex;
   height: 100%;
   gap: 0;
+}
+.app.ai-open {
+  --ctx-right: calc(clamp(360px, 34vw, 560px) + 12px);
 }
 .main {
   flex: 1;

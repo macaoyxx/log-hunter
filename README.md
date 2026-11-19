@@ -201,6 +201,7 @@ go run ./tools/genicon   # 重新生成应用图标（build/appicon.png + icon.i
 | [结果表画布宽与列宽机制](.memory/result-canvas-layout.md) | 画布宽必须随渲染窗口实测伸缩（预估/grow-only/字符估算三种错法均实测有坑）；flex 子项 nowrap 的 min-width:auto 会顶开 width 使省略失效 |
 | [引擎共享状态并发铁律](.memory/session-concurrency.md) | results/stats/mode 等五字段读写必须在 s.mu 锁内（锁外写曾致崩溃级竞争）；lastEmit 原子化与去重 TOCTOU 复查同批修复 |
 | [AI 专家面板契约](.memory/ai-agent-panel.md) | 工具结果 FIFO 配对 + 轮末关闭未完成步骤（并行批量同名调用防永动 spinner）；面板 v-show 常驻叉叉只藏不杀（销毁丢 busy/事件落点三连锁） |
+| [AI 取证工具体系](.memory/ai-agent-tools.md) | 各工具上限防护栏与设计原则（截断显式标注+聚合兜底）；等待阶段标注正解与三个被否形态；授权三态/基线重锚；真模型 E2E 回归装置 |
 
 ## License
 

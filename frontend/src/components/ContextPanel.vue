@@ -214,8 +214,9 @@ function clearAllMarks() {
   animation: slide-in .18s ease-out;
   transition: width .18s ease;
 }
-/* 放大铺满：长日志行排查 */
-.panel.maximized { width: 100vw; }
+/* 放大铺满：长日志行排查。铺满的是剩余可用区——右缘锚定在 --ctx-right（AI 列打开时
+   让位），宽随偏移收窄；曾写 100vw，AI 打开时左边被撑出一个 AI 列宽 */
+.panel.maximized { width: calc(100vw - var(--ctx-right, 0px)); }
 @keyframes slide-in {
   from { transform: translateX(30px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }

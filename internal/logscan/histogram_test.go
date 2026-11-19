@@ -61,11 +61,11 @@ func TestNiceStep(t *testing.T) {
 	cases := []struct {
 		raw, want int64
 	}{
-		{1, 100 * ms},            // 亚秒一律 100ms 起步
-		{99 * ms, 100 * ms},      // 不足 100ms 也取 100ms
-		{101 * ms, 200 * ms},     // 超过 100ms → 200ms
-		{1 * sec, 1 * sec},       // 恰整秒
-		{1500 * ms, 2 * sec},     // 1.5s → 2s
+		{1, 100 * ms},        // 亚秒一律 100ms 起步
+		{99 * ms, 100 * ms},  // 不足 100ms 也取 100ms
+		{101 * ms, 200 * ms}, // 超过 100ms → 200ms
+		{1 * sec, 1 * sec},   // 恰整秒
+		{1500 * ms, 2 * sec}, // 1.5s → 2s
 		{9 * sec, 10 * sec},
 		{25 * sec, 30 * sec},
 		{90 * sec, 2 * min},
@@ -73,7 +73,7 @@ func TestNiceStep(t *testing.T) {
 		{45 * min, 1 * hr},
 		{2 * hr, 2 * hr},
 		{5 * hr, 6 * hr},
-		{30 * hr, 2 * day},       // 1.25d → 2d（按整天向上取整）
+		{30 * hr, 2 * day}, // 1.25d → 2d（按整天向上取整）
 		{3 * day, 3 * day},
 	}
 	for _, c := range cases {
@@ -265,5 +265,48 @@ func TestTimeHistogramParallel(t *testing.T) {
 	}
 	if total != 33 {
 		t.Fatalf("11 文件 ×3 行总量应 33，得到 %d", total)
+	}
+}
+
+// TestSearchEffective 大 0 段（堆栈块）欺骗朴素二分的回归：点 01:45 曾跳过
+// 02:07~03:03 的行落到 04:30——0 使判定恒 false，二分整段右跳
+func TestSearchEffective(t *testing.T) {
+	mk := func(sec int64) int64 { return sec * 1e9 }
+	// 构造：01:40 主行 + 3000 行堆栈(0) + 02:07 起数千行 + 04:30 尾段
+	ts := []int64{mk(5000), mk(6000)} // 早期行
+	last := mk(6000)
+	for i := 0; i < 3000; i++ { // 01:40 后大 0 段
+		ts = append(ts, 0)
+	}
+	_ = last
+	anchor := func(base int64) { ts = append(ts, base) }
+	anchor(mk(7362)) // 02:02? 用秒数近似：02:07 = 7362s、04:30 = 16200s
+	for i := 0; i < 5; i++ {
+		anchor(mk(7363 + int64(i)))
+	}
+	for i := 0; i < 2000; i++ { // 又一段堆栈
+		ts = append(ts, 0)
+	}
+	anchor(mk(16200)) // 04:30
+	anchor(mk(16201))
+
+	// 目标 01:45 = 6300s：应命中 7362s（02:02~02:07 区段首行），不是 16200
+	got := searchEffective(ts, mk(6300))
+	if ts[got] != mk(7362) {
+		t.Fatalf("应命中 7362s 行（被 0 段隔开的首个 >= 目标），得 ts[%d]=%d", got, ts[got]/1e9)
+	}
+	// 目标在 0 段内（继承锚点）：05:00 前的堆栈行——应跳到 04:30 主行之后？
+	// 目标 16100s（04:1x）：首个 >= 为 16200
+	if got := searchEffective(ts, mk(16100)); ts[got] != mk(16200) {
+		t.Fatalf("16100 目标应命中 16200，得 %d", ts[got]/1e9)
+	}
+	// 超出全部：返回 len
+	if got := searchEffective(ts, mk(99999)); got != len(ts) {
+		t.Fatalf("超界应返回 len，得 %d", got)
+	}
+	// 文件头即 0 段（无时间开头）+ 后续有时间：目标落在中间，不应被头部 0 段干扰
+	ts2 := []int64{0, 0, 0, mk(100), mk(200), 0, 0, mk(300)}
+	if got := searchEffective(ts2, mk(150)); ts2[got] != mk(200) {
+		t.Fatalf("头部 0 段场景应命中 200，得 %v", ts2[got])
 	}
 }

@@ -2,7 +2,6 @@ package logscan
 
 import (
 	"runtime"
-	"sort"
 	"sync"
 	"time"
 )
@@ -278,11 +277,45 @@ func (h *Histogram) finish() {
 	}
 }
 
+// searchEffective 在 ts 数组中找「有效时间 >= target 的最早下标」。
+//
+// ts 的结构性质：非零值（原生时间戳）随行号单调非降；无时间行 ts=0，其有效时间
+// = 向前最近非零值（锚点继承）。因此**有效值序列整体单调非降**——0 不是极小值，
+// 而是复制了前面的锚点。
+//
+// 曾直接 sort.Search(ts[i] >= target)：mid 落在 0 段时判定恒 false，二分向右
+// 跳过整段，连段后被跳过的真实命中行也一并错过（实测：点 01:45 跳过 02:07~03:03
+// 的全部行落到 04:30）；"回看 1024 行"的窗口校正盖不住大段。正确做法是按有效值
+// 二分：mid 为 0 时取其锚点（向前最近非零，堆栈块千行内有界）判定。
+func searchEffective(ts []int64, target int64) int {
+	eff := func(i int) int64 {
+		if ts[i] != 0 {
+			return ts[i]
+		}
+		// 向前找锚点（堆栈块有界；65536 上限防全 0 文件的病态回走——真实块远小于此）
+		for j := i - 1; j >= 0 && i-j <= 65536; j-- {
+			if ts[j] != 0 {
+				return ts[j]
+			}
+		}
+		return 0 // 前方全 0（文件头无时间段）：有效值 0 < target，判定 false
+	}
+	lo, hi := 0, len(ts)
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if eff(mid) >= target {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	return lo
+}
+
 // IndexByTime 定位结果集中「锚点有效时间 >= tsNS 的最早一条」的全局下标（双击直方图跳转用；
 // 无匹配返回 -1）。合并序与平铺序语义统一：都跳到该时刻之后最早出现的那条日志。
 //   - 物化结果（查询/全览物化）：O(n) 单遍 + 锚点继承（与直方图聚合同一 effective 口径）
-//   - 零物化全览：按文件对 idx.ts 二分（日志时间基本单调；无时间行 ts=0 视作极小被自然
-//     跳过，堆栈续行落在锚点附近，定位差一两行可接受），各文件候选取全局最早
+//   - 零物化全览：按文件对 idx.ts 做有效值二分（见 searchEffective），各文件候选取全局最早
 func (s *Session) IndexByTime(tsNS int64) int {
 	if tsNS <= 0 {
 		return -1
@@ -294,19 +327,13 @@ func (s *Session) IndexByTime(tsNS int64) int {
 		bestIdx := -1
 		for fi, e := range s.browseFiles {
 			ts := e.idx.ts
-			li := sort.Search(len(ts), func(i int) bool { return ts[i] >= tsNS })
+			li := searchEffective(ts, tsNS)
 			if li >= len(ts) {
 				continue
 			}
-			// 二分假设 ts 单调，但无时间行（ts=0）会打破单调使落点偏后：
-			// 限定窗口内向前线性校正找更早的命中行（堆栈/SQL 续行段通常千行内）
-			lo := max(0, li-1024)
-			for i := lo; i < li; i++ {
-				if ts[i] >= tsNS {
-					li = i
-					break
-				}
-			}
+			// 裸 ts[li] 比较依赖「落点恒为非零行」：非零单调下二分收敛到最小 true
+			// 下标，0 行为 true 时其锚点主行（更小下标）必为 true——收敛必到主行。
+			// 乱序日志破坏该性质时此处会拿 0 当最早值（与被替换的旧实现同源假设）
 			if bestIdx < 0 || ts[li] < bestVal {
 				var base int64
 				if fi > 0 {

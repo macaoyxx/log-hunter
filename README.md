@@ -202,6 +202,7 @@ go run ./tools/genicon   # 重新生成应用图标（build/appicon.png + icon.i
 | [引擎共享状态并发铁律](.memory/session-concurrency.md) | results/stats/mode 等五字段读写必须在 s.mu 锁内（锁外写曾致崩溃级竞争）；lastEmit 原子化与去重 TOCTOU 复查同批修复 |
 | [AI 专家面板契约](.memory/ai-agent-panel.md) | 工具结果 FIFO 配对 + 轮末关闭未完成步骤（并行批量同名调用防永动 spinner）；面板 v-show 常驻叉叉只藏不杀（销毁丢 busy/事件落点三连锁） |
 | [AI 取证工具体系](.memory/ai-agent-tools.md) | 各工具上限防护栏与设计原则（截断显式标注+聚合兜底）；等待阶段标注正解与三个被否形态；授权三态/基线重锚；真模型 E2E 回归装置 |
+| [AI 协议序列化契约](.memory/ai-protocol-serialization.md) | text 分段必须带非空 text 字段（omitempty 空串→缺字段残段→严格端点 400，v0.3.3「只贴图不打字」实录）；协议 bug 复现必须 dump 真实请求体，手写 JSON 与框架序列化不等价 |
 
 ## License
 

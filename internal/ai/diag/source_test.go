@@ -233,3 +233,22 @@ func TestFindFiles(t *testing.T) {
 		t.Fatalf("无授权应引导先授权: %.100s", out)
 	}
 }
+
+// 超时未响应 ≠ 拒绝：话术如实（「未响应」），但同样登记会话内不再询问（防反复重试）
+func TestReadSourceNoAnswer(t *testing.T) {
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "A.java")
+	os.WriteFile(src, []byte("x\n"), 0o644)
+	d := newAuthDiagnoser(t, nil)
+	d.AskAuth = func(context.Context, string, string, bool) AuthResult {
+		return AuthResult{NoAnswer: true}
+	}
+	s := &Session{}
+	out := d.readSourceExec(context.Background(), s, `{"path": "`+filepath.ToSlash(src)+`", "reason": "r"}`)
+	if !contains(out, "未响应") || contains(out, "拒绝了对") {
+		t.Fatalf("超时应为「未响应」话术而非谎称拒绝: %.100s", out)
+	}
+	if out2 := d.readSourceExec(context.Background(), s, `{"path": "`+filepath.ToSlash(src)+`", "reason": "r"}`); !contains(out2, "此前已拒绝") {
+		t.Fatalf("未响应后本会话内应不再询问: %.100s", out2)
+	}
+}

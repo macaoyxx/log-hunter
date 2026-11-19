@@ -11,13 +11,17 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-// AuthResult 授权回执（AskAuth 返回）：Allow=放行；Remember=用户选择持久记住
+// AuthResult 授权回执（AskAuth 返回）：Allow=放行；Remember=用户选择持久记住；
+// NoAnswer=用户长时间未响应（超时兜底）——不是拒绝：话术如实，但仍登记会话内
+// 不再询问（防模型反复重试把轮次耗死在等卡上）
 type AuthResult struct {
 	Allow    bool
 	Remember bool
+	NoAnswer bool
 }
 
 const (
@@ -73,6 +77,10 @@ func (d *Diagnoser) readSourceExec(ctx context.Context, s *Session, args string)
 			// 本轮被停止/整轮超时：不是用户拒绝——不登记拒绝，避免下轮误判
 			return "本轮已取消（未完成授权），如需读取请在下一轮重试"
 		}
+		if r.NoAnswer {
+			s.denyDir(target)
+			return "用户长时间未响应授权（可能已离开）。本会话内不再询问该目录，请基于已有证据继续分析"
+		}
 		if !r.Allow {
 			s.denyDir(target)
 			return "用户拒绝了对该目录的访问（本会话内不再询问）。请基于日志继续分析，不要重复请求该目录"
@@ -96,6 +104,10 @@ func (d *Diagnoser) readSourceExec(ctx context.Context, s *Session, args string)
 		r := d.AskAuth(ctx, clean, p.Reason+"（敏感文件：可能包含密钥/凭证，每次读取均需单独授权）", true)
 		if ctx.Err() != nil {
 			return "本轮已取消（未完成授权），如需读取请在下一轮重试"
+		}
+		if r.NoAnswer {
+			s.denyFile(clean)
+			return "用户长时间未响应授权（可能已离开）。本会话内不再询问该文件，请基于已有证据继续"
 		}
 		if !r.Allow {
 			s.denyFile(clean)
@@ -220,10 +232,12 @@ func (d *Diagnoser) findFilesExec(s *Session, args string) string {
 		return "尚无已授权目录——先 read_source 一个路径触发授权，授权后即可按名查找"
 	}
 	// 匹配语义：含通配符走 filepath.Match；纯片段按小写包含。剪枝跳过
-	// .git/node_modules/target 等大而无果目录（万级文件的工程毫秒级走完）
+	// .git/node_modules/target 等大而无果目录（万级文件的工程毫秒级走完）。
+	// 全程顺带统计目录分布：截断时附上（大源码树靠它换更精确片段或换目录定向）
 	hasWild := strings.ContainsAny(pat, "*?")
 	lower := strings.ToLower(pat)
 	var hits []string
+	dirCount := map[string]int{}
 	for _, root := range roots {
 		filepath.WalkDir(root, func(path string, de fs.DirEntry, err error) error {
 			if err != nil {
@@ -248,6 +262,7 @@ func (d *Diagnoser) findFilesExec(s *Session, args string) string {
 			}
 			if ok {
 				hits = append(hits, path)
+				dirCount[filepath.Dir(path)]++
 			}
 			return nil
 		})
@@ -255,21 +270,48 @@ func (d *Diagnoser) findFilesExec(s *Session, args string) string {
 	if len(hits) == 0 {
 		return "授权目录内没有匹配 " + pat + " 的文件（可用 read_source 读目录清单确认结构）"
 	}
-	capped := len(hits) > findFilesCap
+	total := len(hits)
+	capped := total > findFilesCap
 	if capped {
 		hits = hits[:findFilesCap]
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "授权目录内匹配 %s 共 %d 个文件%s：\n", pat, len(hits), map[bool]string{true: "（达上限截断，请用更具体的片段）", false: ""}[capped])
+	fmt.Fprintf(&out, "授权目录内匹配 %s 命中共 %d 个文件", pat, total)
+	if capped {
+		fmt.Fprintf(&out, "，展示前 %d 个（更具体片段可收窄）", findFilesCap)
+	}
+	out.WriteString("：\n")
 	for _, h := range hits {
 		out.WriteString(h)
 		out.WriteString("\n")
 	}
+	// 截断时附目录分布：模型据此定向（路径本身便宜，分布才是导航信息）
+	if capped {
+		dirs := make([]string, 0, len(dirCount))
+		for d := range dirCount {
+			dirs = append(dirs, d)
+		}
+		// 稳定序：计数降序为主键，并列按路径字典序——map 遍历序不定，不给稳定序每次展示会抖动
+		sort.Slice(dirs, func(i, j int) bool {
+			if dirCount[dirs[i]] != dirCount[dirs[j]] {
+				return dirCount[dirs[i]] > dirCount[dirs[j]]
+			}
+			return dirs[i] < dirs[j]
+		})
+		if len(dirs) > 15 {
+			dirs = dirs[:15]
+		}
+		out.WriteString("命中按目录分布（前 15）：\n")
+		for _, d := range dirs {
+			fmt.Fprintf(&out, "  %s ×%d\n", d, dirCount[d])
+		}
+	}
 	return out.String()
 }
 
-// findFilesCap find_files 返回路径数上限：定位工具不是清单工具
-const findFilesCap = 50
+// findFilesCap find_files 返回路径数上限：路径很便宜（每条约几十字符），
+// 200 个约占十几 KB 上下文——定位工具给足视野；更多靠目录分布导航而非堆路径
+const findFilesCap = 200
 
 // sensitiveFile 敏感文件判定：可能携带密钥/凭证的配置与凭据文件——
 // 目录授权不覆盖，逐文件逐次授权（从严：宁可多问一次，不可漏一个 key）

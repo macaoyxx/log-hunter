@@ -68,8 +68,8 @@ func (a *App) askSourceAuth(ctx context.Context, target, reason string, sensitiv
 		return r
 	case <-ctx.Done(): // 用户点了停止/整轮超时：按取消处理（diag 侧不登记拒绝）
 		return diag.AuthResult{}
-	case <-time.After(authWaitTimeout): // 用户长时间未响应：按拒绝处理
-		return diag.AuthResult{}
+	case <-time.After(authWaitTimeout): // 用户长时间未响应：如实标未响应（diag 侧话术区分、仍登记防骚扰）
+		return diag.AuthResult{NoAnswer: true}
 	}
 }
 

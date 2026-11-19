@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -334,9 +333,6 @@ func (d *Diagnoser) agentLoop(ctx context.Context, cl *client.Client, model, eff
 			s.mu.Unlock()
 		}
 		send := s.trimHistory(budget) // 超预算截最早追问轮（轮边界安全）
-		// 步事件（等待可视化）：前端据此显示「第 N 步 · 等待首字 X 秒」，
-		// 首个 delta/reasoning 到达即切换——慢在模型推理时用户知道它活着
-		d.emit(Event{Kind: "step", Text: strconv.Itoa(step + 1)})
 		var stepErr error
 		msg, err := cl.ChatStream(ctx, model, send, d.toolDefs(), effort, maxOut, client.StreamCallbacks{
 			OnDelta:     func(t string) { d.emit(Event{Kind: "delta", Text: t}) },

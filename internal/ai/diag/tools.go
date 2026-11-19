@@ -148,7 +148,7 @@ var findFilesTool = Tool{
 		Type: "function",
 		Function: client.FunctionSpec{
 			Name:        "find_files",
-			Description: "在已授权的目录内按文件名查找文件（支持 * 通配或片段匹配，大小写不敏感），返回最多 50 个路径。日志堆栈指向类名/模块时先用它定位源码文件，再 read_source 读取。",
+			Description: "在已授权的目录内按文件名查找文件（支持 * 通配或片段匹配，大小写不敏感），返回最多 200 个路径；命中过多时附按目录分布，据此换更精确的片段或目录定向。日志堆栈指向类名/模块时先用它定位源码文件，再 read_source 读取。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

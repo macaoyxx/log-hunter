@@ -400,7 +400,7 @@ type SideQueryResult struct {
 // SideQuery 一次性查询（不写 s.results / s.stats / s.mode，主结果集不受影响）：
 // agent 自主取证用——若走 RunQuery 主路径会把用户屏幕上的结果集覆盖掉。
 // limit 钳到 sideQueryMaxLimit；行凑够后继续计数到 sideCountCap 再停
-//（计数与取行同趟扫描，稀有关键字最坏全扫与改造前同量级，常见关键字只多扫一小段）；
+// （计数与取行同趟扫描，稀有关键字最坏全扫与改造前同量级，常见关键字只多扫一小段）；
 // spec.FileIDs 为空 = 全部已加载文件。全程持读锁
 func (s *Session) SideQuery(ctx context.Context, spec *QuerySpec, limit int) (SideQueryResult, error) {
 	if limit <= 0 || limit > sideQueryMaxLimit {
@@ -541,7 +541,7 @@ func (s *Session) SideStack(fileName string, line int64) ([]SideRow, error) {
 
 // SideFollow 跨全部文件按关联标识全量拉取（agent 工具 follow）：给请求 ID/线程名/
 // 订单号等任意标识，一次给齐散落在所有文件的相关行，按时间戳合并排序成单一时间线
-//（多节点交叉排查的核心动线——search 只给前 50 条且按文件分堆，串不起全链路）。
+// （多节点交叉排查的核心动线——search 只给前 50 条且按文件分堆，串不起全链路）。
 // 上限 followCap 行，超出截断并告知换更精确的标识。全程持读锁
 func (s *Session) SideFollow(ctx context.Context, id string) (rows []SideRow, capped bool, err error) {
 	id = strings.TrimSpace(id)

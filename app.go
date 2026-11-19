@@ -237,7 +237,7 @@ func (a *App) GetTimeHistogram() *logscan.Histogram {
 }
 
 // GetIndexByTime 双击直方图跳转定位：结果集中「该时刻之后最早一条」的全局下标
-//（-1 = 该时刻晚于全部结果；tsNS 为 unixNano）
+// （-1 = 该时刻晚于全部结果；tsNS 为 unixNano）
 func (a *App) GetIndexByTime(tsNS int64) int {
 	return a.session.IndexByTime(tsNS)
 }

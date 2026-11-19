@@ -98,7 +98,7 @@ var clusterTool = client.ToolDefinition{
 		Name:        "cluster",
 		Description: "对全部已加载日志（可按级别过滤）做全局错误聚类——当前结果集之外的全局视角。",
 		Parameters: map[string]any{
-			"type":       "object",
+			"type": "object",
 			"properties": map[string]any{
 				"levels": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "级别过滤（如 [4,5] 只看 ERROR/FATAL），缺省=全部"},
 			},

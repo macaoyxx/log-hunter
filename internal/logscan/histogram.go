@@ -10,8 +10,8 @@ import (
 // Buckets 每桶 7 位计数：[0..5]=TRACE..FATAL 六级、[6]=无级别（plain/未识别级别）行——
 // 前端无级别段以中性灰渲染，全部文件无级别时整体退化为单色总量条（彩色只属于日志信号）
 type Histogram struct {
-	Start    int64      `json:"start"`    // 首桶起点 unixNano（整刻度对齐）
-	Step     int64      `json:"step"`     // 桶宽 ns（整刻度：100ms ~ 1d 的可读刻度）
+	Start    int64      `json:"start"` // 首桶起点 unixNano（整刻度对齐）
+	Step     int64      `json:"step"`  // 桶宽 ns（整刻度：100ms ~ 1d 的可读刻度）
 	Buckets  [][7]int32 `json:"buckets"`
 	MaxTotal int32      `json:"maxTotal"` // 最大桶总量（前端纵向归一化用）
 	NoTS     int64      `json:"noTs"`     // 无时间格式的行数（整文件无时间戳，无锚点可继承，不进桶）

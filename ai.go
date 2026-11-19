@@ -39,9 +39,16 @@ func (a *App) initAI(dataDir string) {
 	}
 }
 
-// authWaitTimeout 单次授权征询的兜底等待上限（正常路径由 AiDiagnose/Followup 的
-// 10 分钟 ctx 先到；此处防 Background ctx 的调用方无限挂起）
+// authWaitTimeout 单次授权征询的兜底等待上限（正常路径由 roundTimeout 先到；
+// 此处防 Background ctx 的调用方无限挂起）
 const authWaitTimeout = 15 * time.Minute
+
+// roundTimeout 单轮诊断/追问的总时长上限；pullTestTimeout 拉取模型/测试连接的
+// 网络等待上限（曾各内联两处，改一处漏一处的温床）
+const (
+	roundTimeout    = 10 * time.Minute
+	pullTestTimeout = 60 * time.Second
+)
 
 // askSourceAuth 阻塞授权（编程 agent 标准模式）：注册回执通道 → 弹授权卡 →
 // 挂起等用户点击，回执到达后 read_source 立即继续执行。
@@ -137,7 +144,7 @@ func (a *App) AiPullModels(p conf.Profile) ([]conf.Model, error) {
 	if p.BaseURL == "" {
 		return nil, fmt.Errorf("档案未配置端点地址")
 	}
-	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(a.ctx, pullTestTimeout)
 	defer cancel()
 	ids, err := client.NewClient(client.Endpoint{BaseURL: p.BaseURL, APIKey: p.APIKey}).
 		ListModels(ctx)
@@ -177,7 +184,7 @@ func (a *App) TestAiConn(p conf.Profile, model string) (string, error) {
 	if model == "" {
 		return "", fmt.Errorf("未指定模型")
 	}
-	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(a.ctx, pullTestTimeout)
 	defer cancel()
 	out, err := client.NewClient(client.Endpoint{BaseURL: p.BaseURL, APIKey: p.APIKey}).
 		ChatOnce(ctx, model, []client.Message{client.TextMessage("user", "回复两个字：正常")}, 16)
@@ -213,7 +220,7 @@ func (a *App) AiDiagnose(profileID, model, effort string) (AiReportOut, error) {
 	if !c.Configured() {
 		return AiReportOut{}, fmt.Errorf("AI 未配置，请先在设置中添加端点档案")
 	}
-	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Minute)
+	ctx, cancel := context.WithTimeout(a.ctx, roundTimeout)
 	defer cancel()
 	base := a.collectBase()
 	rep, err := a.aiDiag.Diagnose(ctx, a.aiSess, profileID, model, effort, base)
@@ -231,7 +238,7 @@ func (a *App) AiFollowup(profileID, model, effort, text string, images []string)
 			return AiReportOut{}, fmt.Errorf("结果集已变化（%d → %d 行），旧引用会指错位置——请重新诊断", baseTotal, total)
 		}
 	}
-	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Minute)
+	ctx, cancel := context.WithTimeout(a.ctx, roundTimeout)
 	defer cancel()
 	rep, err := a.aiDiag.Followup(ctx, a.aiSess, profileID, model, effort, text, images, a.session.Stats().Total)
 	return AiReportOut{Text: rep.Text, Docs: rep.Docs}, err

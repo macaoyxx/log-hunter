@@ -7,6 +7,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import { renderMd } from './aiMd'
 import { conf, logscan } from '../../wailsjs/go/models'
+import { AI_DEF_CTX, AI_IMG_MAX_BYTES } from '../constants'
 import { AiDiagnose, AiFollowup, AiResetSession, CancelAi, AiAuthRespond, AiResolveRef, AiSessionInfo } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
@@ -493,7 +494,7 @@ function readFile(f: File) {
     items.value.push({ kind: 'error', text: `附件「${f.name}」超过 ${fmtSize(ATT_TEXT_MAX)} 上限（当前 ${fmtSize(f.size)}），未添加——超大日志建议拖入文件列表查询`, reasoning: '', steps: [], streaming: false })
     return
   }
-  if (f.size > (5 << 20)) {
+  if (f.size > AI_IMG_MAX_BYTES) {
     items.value.push({ kind: 'error', text: `图片「${f.name}」超过 5MB 上限，未添加`, reasoning: '', steps: [], streaming: false })
     return
   }
@@ -547,7 +548,7 @@ function fmtCtx(n: number): string {
 }
 const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%）
   const m = curModels.value.find(x => x.name === activeModel.value)
-  const ctx = m?.ctx || props.config.ctxTokens || 1048576
+  const ctx = m?.ctx || props.config.ctxTokens || AI_DEF_CTX
   return `上下文预算 ≈ ${fmtCtx(Math.round(ctx * 0.7))} tok`
 })
 </script>

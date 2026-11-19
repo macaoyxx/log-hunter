@@ -1,21 +1,26 @@
 <script setup lang="ts">
 // AI 诊断设置（模态 · 主从双栏）：顶部全局装备条（主/视觉通道、思考档、默认窗口）+
-// 左侧档案导航列 + 右侧详情编辑（端点/密钥/模型能力表/拉取/测试），目录授权独立页签。
-// 厂商配置 CRUD、模型能力三属性（ctx/vision/maxOut）语义不变；
-// 编辑走本地 draft，显式保存；「拉取模型/测试连接」操作已保存厂商（点击时先静默保存 draft）
+// 左侧厂商导航列 + 右侧详情编辑（端点/密钥/模型能力表/拉取/测试），
+// 目录授权为底部独立全局分区（不与厂商混排）。
+// 编辑走本地 draft 显式保存；拉取模型/测试连接直接作用于草稿档案（不隐式落盘）
 import { computed, onMounted, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 import { conf } from '../../wailsjs/go/models'
+import { AI_DEF_CTX, AI_DEF_MAXOUT } from '../constants'
 import { AiPullModels, GetAiConfig, SetAiConfig, TestAiConn } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{ config: conf.Conf }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved'): void }>()
 
+
 // 深拷贝 draft（保存前不动全局）
 function cloneConf(c: conf.Conf): conf.Conf {
   const out = conf.Conf.createFrom(JSON.parse(JSON.stringify(c)))
   // 历史数据兜底：Models/Profiles 曾以 null 落盘（后端已修，旧文件仍可能带 null）。
-  // 数字能力不做前端代填——空值经输入框占位符展示全局默认，保持「空 = 用默认」语义
+  // 全局默认为空（打开早于配置拉取/拉取失败静默）时兜成后端默认——
+  // 曾漏兜，String(undefined) 把 "undefined" 字样拼进占位符
+  if (out.ctxTokens == null) out.ctxTokens = AI_DEF_CTX
+  if (out.maxOutTokens == null) out.maxOutTokens = AI_DEF_MAXOUT
   if (!out.profiles) out.profiles = []
   for (const p of out.profiles) if (!p.models) p.models = []
   return out
@@ -73,7 +78,9 @@ function removeProfile(id: string) {
   if (sel.value === p.id) sel.value = draft.value.profiles[Math.min(i, draft.value.profiles.length - 1)]?.id ?? null
 }
 function addModel(p: conf.Profile) {
-  p.models.push(conf.Model.createFrom({ name: 'model-name', ctx: 0, vision: false, maxOut: 0 }))
+  // ctx/maxOut 不预填数字：预填 0 会在数字输入框里显示 "0"（盖掉占位符），
+  // 留空则占位符展示全局默认——「空 = 用默认」语义在 UI 上如实可见，不合适再手改
+  p.models.push(conf.Model.createFrom({ name: 'model-name', vision: false }))
 }
 function profileById(id: string | undefined) { return draft.value.profiles.find(p => p.id === id) }
 // 档案状态灯：测试连通=绿 / 已配端点未测=蓝 / 未配置=灰
@@ -223,14 +230,14 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
             </div>
 
             <div class="st-d-scroll">
-              <div class="st-sub">窗口/上限留空 = 用全局默认（{{ (((draft.ctxTokens ?? 1048576) / 1048576).toFixed(1).replace(/\.0$/, '')) }}M / {{ draft.maxOutTokens ?? 8192 }}）；视觉 = 支持图片输入，vision/vl 类自动勾选</div>
+              <div class="st-sub">窗口/上限留空 = 用全局默认（{{ (((draft.ctxTokens ?? AI_DEF_CTX) / AI_DEF_CTX).toFixed(1).replace(/\.0$/, '')) }}M / {{ draft.maxOutTokens ?? AI_DEF_MAXOUT }}）；视觉 = 支持图片输入，vision/vl 类自动勾选</div>
               <div v-for="(m, mi) in cur.models" :key="mi" class="st-model">
                 <input v-model="m.name" class="st-m-name mono-in" placeholder="模型名" />
-                <input v-model.number="m.ctx" class="st-m-num mono-in" type="number" min="0" title="上下文窗口（token，留空用全局默认）" :placeholder="String(draft.ctxTokens)" />
+                <input v-model.number="m.ctx" class="st-m-num mono-in" type="number" min="0" title="上下文窗口（token，留空用全局默认）" :placeholder="String(draft.ctxTokens ?? AI_DEF_CTX)" />
                 <label class="st-m-vis" title="支持图片输入（纯文本模型贴图时走视觉厂商转述）">
                   <input v-model="m.vision" type="checkbox" />视觉
                 </label>
-                <input v-model.number="m.maxOut" class="st-m-num mono-in" type="number" min="0" title="单次响应上限（留空用全局默认）" :placeholder="String(draft.maxOutTokens)" />
+                <input v-model.number="m.maxOut" class="st-m-num mono-in" type="number" min="0" title="单次响应上限（留空用全局默认）" :placeholder="String(draft.maxOutTokens ?? AI_DEF_MAXOUT)" />
                 <button class="st-m-del" title="移除模型" @click="cur.models.splice(mi, 1)"><AppIcon name="x" :size="10" /></button>
               </div>
               <div class="st-rowbtns">

@@ -6,7 +6,6 @@
 import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import { GetTimeHistogram } from '../../wailsjs/go/main/App'
 import { logscan } from '../../wailsjs/go/models'
-import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{
   stats: logscan.QueryStats | null
@@ -40,9 +39,16 @@ function measure() {
   if (wrap.value) svgW.value = Math.max(160, wrap.value.clientWidth - 26)
 }
 onMounted(() => {
-  measure()
   ro = new ResizeObserver(measure)
-  if (wrap.value) ro.observe(wrap.value)
+  // 模板根是 v-if="visible"：挂载时若无查询结果 wrap 为 null，一次性 observe 会
+  // 静默跳过——此后直方图出现也无人监听，svgW 停在旧值（窗口放大留白/缩小右端被裁）。
+  // 改 watch：元素出现（含 v-if 销毁重建）即补挂并立即测量
+  watch(wrap, el => {
+    if (el) {
+      measure()
+      ro!.observe(el)
+    }
+  }, { immediate: true })
 })
 onUnmounted(() => ro?.disconnect())
 
@@ -127,9 +133,9 @@ const peak = computed(() => {
   return { x: idx * bw.value + bw.value / 2, n: h.maxTotal, plain: isPlain.value }
 })
 
-// ---- 悬停（拖框期间不显示） ----
+// ---- 悬停（拖框期间不显示）：桶高亮列 + 详情浮层 ----
 const LVL_NAMES = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']
-const tip = reactive({ i: -1, x: 0, y: 0 })
+const tip = reactive({ i: -1, x: 0, y: 0, below: false })
 const tipShow = computed(() => tip.i >= 0 && !dragging.value)
 const tipBucket = computed(() => hist.value && tip.i >= 0 ? hist.value.buckets[tip.i] : null)
 function onMove(e: PointerEvent) {
@@ -137,9 +143,11 @@ function onMove(e: PointerEvent) {
   const svg = e.currentTarget as SVGSVGElement
   const box = svg.getBoundingClientRect()
   tip.i = Math.max(0, Math.min(nB.value - 1, Math.floor((e.clientX - box.left) / bw.value)))
-  const card = svg.parentElement!.getBoundingClientRect()
-  tip.x = e.clientX - card.left + 14
-  tip.y = e.clientY - card.top - 8
+  // 浮层 fixed 视口定位：卡片（~116px）远矮于浮层（~170px）且自带 overflow:hidden，
+  // absolute 放卡片里上下都出界被裁——fixed 逃出裁剪上下文，窗口内永远放得下
+  tip.x = Math.max(8, Math.min(e.clientX + 14, window.innerWidth - 186))
+  tip.below = e.clientY < 190 // 距视口顶不足浮层高时翻到光标下方
+  tip.y = e.clientY + (tip.below ? 18 : -8)
 }
 function onLeave() { tip.i = -1 }
 
@@ -177,11 +185,13 @@ function onDblclick(e: MouseEvent) {
   if (!h) return
   const svg = e.currentTarget as SVGSVGElement
   const box = svg.getBoundingClientRect()
-  const x = Math.max(0, Math.min(svgW.value, e.clientX - box.left))
-  const ns = h.start + Math.round(x / svgW.value * span.value)
-  emit('jump', ns)
+  // 按桶取时刻（桶起始边界），不是像素比例插值：插值时刻常晚于行时间，
+  // IndexByTime 查无命中静默不跳——少量日志（刻度对齐放大偏差）与最后一桶
+  // （ns 逼近 span 上界而末行时间更早）两个症状同根于此
+  const x = Math.max(0, Math.min(svgW.value - 0.5, e.clientX - box.left))
+  const i = Math.min(nB.value - 1, Math.floor(x / bw.value))
+  emit('jump', h.start + i * h.step)
 }
-function reset() { emit('brush', 0, 0) }
 </script>
 
 <template>
@@ -191,8 +201,6 @@ function reset() { emit('brush', 0, 0) }
       <span class="tsh-sub">{{ totalRows.toLocaleString() }} 行 · {{ fmtTs(hist!.start) }} ~ {{ fmtTs(hist!.start + span) }}</span>
       <span class="sp"></span>
       <span v-if="hist!.noTs > 0" class="tsh-nots" :title="`${hist!.noTs.toLocaleString()} 行无时间戳（含无时间格式文件的命中行），未计入分布`">{{ hist!.noTs.toLocaleString() }} 行无时间戳未计入</span>
-      <span class="tsh-tip">拖框缩小时间范围 · 双击跳到该时刻</span>
-      <button class="tsh-reset" title="清除时间条件并重新查询（回到完整时间范围）" @click="reset"><AppIcon name="x" :size="10" />清除时间</button>
     </div>
     <svg class="tsh-svg" :width="svgW" :height="H + AXIS" :viewBox="`0 0 ${svgW} ${H + AXIS}`"
       @pointermove="onMove" @pointerleave="onLeave" @pointerdown="onDown"
@@ -211,8 +219,10 @@ function reset() { emit('brush', 0, 0) }
       <rect v-if="dragging && Math.abs(dragging.x1 - dragging.x0) > 2" class="brush-box"
         :x="Math.min(dragging.x0, dragging.x1)" y="0" :width="Math.abs(dragging.x1 - dragging.x0)" :height="H" rx="2" />
     </svg>
-    <!-- 悬停桶详情 -->
-    <div v-if="tipShow && tipBucket" class="tsh-tooltip" :style="{ left: Math.min(tip.x, svgW - 180) + 'px', top: tip.y + 'px' }">
+    <!-- 悬停桶详情：位置全在 onMove 算好（视口系钳制+翻转），模板只管用——
+        曾在此残留 svgW 系旧钳制，把视口坐标错钳导致鼠标右移浮层不跟随 -->
+    <div v-if="tipShow && tipBucket" class="tsh-tooltip" :class="{ below: tip.below }"
+      :style="{ left: tip.x + 'px', top: tip.y + 'px' }">
       <div class="tt-t">{{ fmtTs(hist!.start + tip.i * hist!.step) }} ~ {{ fmtTs(hist!.start + (tip.i + 1) * hist!.step) }}</div>
       <div class="tt-total">{{ (tipBucket[0] + tipBucket[1] + tipBucket[2] + tipBucket[3] + tipBucket[4] + tipBucket[5] + tipBucket[6]).toLocaleString() }} 行</div>
       <div v-for="lv in [5, 4, 3, 2, 1, 0]" :key="lv" class="tt-row" :class="{ zero: tipBucket[lv] === 0 }">
@@ -237,13 +247,6 @@ function reset() { emit('brush', 0, 0) }
 .tsh-sub { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
 .tsh-head .sp { flex: 1; }
 .tsh-nots { font-size: 10.5px; color: var(--text-faint); }
-.tsh-tip { font-size: 10.5px; color: var(--text-faint); }
-.tsh-reset {
-  display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--accent-line);
-  background: var(--accent-soft); color: var(--accent-strong); border-radius: 999px;
-  padding: 1px 9px; font-size: 10.5px; font-family: var(--mono); cursor: pointer;
-}
-.tsh-reset:hover { background: var(--accent-active); border-color: var(--accent-line); }
 .tsh-svg { display: block; cursor: crosshair; touch-action: none; }
 .gridline { stroke: var(--border); stroke-width: 1; opacity: .55; }
 .axis-t { font-family: var(--mono); font-size: 9.5px; fill: var(--text-faint); }
@@ -253,11 +256,12 @@ function reset() { emit('brush', 0, 0) }
 .brush-box { fill: var(--accent-active); stroke: var(--accent-line); stroke-width: 1; }
 
 .tsh-tooltip {
-  position: absolute; z-index: 30; pointer-events: none; min-width: 168px;
+  position: fixed; z-index: 30; pointer-events: none; min-width: 168px;
   background: var(--bg-float); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   box-shadow: var(--shadow-pop), var(--sheen-light); padding: 7px 10px;
-  transform: translateY(-100%);
+  transform: translateY(-100%); /* 默认浮在光标上方（视口坐标系，不受卡片 overflow 裁剪） */
 }
+.tsh-tooltip.below { transform: none; } /* 近视口顶时翻到光标下方 */
 .tsh-tooltip .tt-t { font-family: var(--mono); font-size: 10px; color: var(--text-faint); margin-bottom: 4px; }
 .tsh-tooltip .tt-total { font-family: var(--mono); font-size: 14px; font-weight: 600; margin-bottom: 5px; }
 .tsh-tooltip .tt-row { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; color: var(--text-dim); line-height: 1.75; }

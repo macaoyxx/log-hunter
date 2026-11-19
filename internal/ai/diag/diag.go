@@ -269,8 +269,14 @@ func (d *Diagnoser) Followup(ctx context.Context, s *Session, profileID, model, 
 	}
 	cl := client.NewClient(ep)
 
-	// 组装本轮 user 消息：文本 +（按路由处理后的）图片
-	parts := []client.ContentPart{client.TextPart(text)}
+	// 组装本轮 user 消息：文本 +（按路由处理后的）图片。
+	// 空文本不加 text 分段：ContentPart.Text 带 omitempty，空串会序列化出
+	// {"type":"text"}（缺 text 字段），严格校验的端点直接 400「参数有误」——
+	// 实测「只贴图不打字」必触发（带文本则字段在，正常）
+	var parts []client.ContentPart
+	if text != "" {
+		parts = append(parts, client.TextPart(text))
+	}
 	for i, img := range images {
 		if n := int64(len(img)); n > d.maxImageBytes() {
 			return Report{}, fmt.Errorf("图片 %d 超过大小上限（%d MB）", i+1, d.maxImageBytes()>>20)

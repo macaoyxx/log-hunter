@@ -11,7 +11,13 @@ package diag
 //   go test ./internal/ai/diag -run TestLiveAgentSource -v -timeout 12m
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,4 +151,63 @@ func TestLiveAgentSource(t *testing.T) {
 		head = head[:400] + "…"
 	}
 	t.Logf("报告开头：\n%s", head)
+}
+
+// TestLiveFollowupEmptyText 真端点回归：空文本 + 贴图（走视觉中转）不得 400——
+// ContentPart.Text 带 omitempty，空文本分段会被序列化成缺 text 字段的
+// {"type":"text"} 残段，严格校验的端点直接报「API 调用参数有误」
+// （v0.3.3「只贴图不打字」必触发，修复=空文本不加该分段）。
+// 断言 = Followup 成功返回非空回复（修复前首个主请求即 400）。
+//
+//	运行：LIVE_E2E=1 LH_AI_JSON=<ai.json> \
+//	  go test ./internal/ai/diag -run TestLiveFollowupEmptyText -v -timeout 6m
+func TestLiveFollowupEmptyText(t *testing.T) {
+	if os.Getenv("LIVE_E2E") != "1" {
+		t.Skip("真模型 E2E：设 LIVE_E2E=1 触发")
+	}
+	aiJSON := os.Getenv("LH_AI_JSON")
+	if aiJSON == "" {
+		aiJSON = filepath.Join("..", "..", "..", "build", "bin", "data", "ai.json")
+	}
+	// ai.json 副本开仓（用户原件不动）
+	b, err := os.ReadFile(aiJSON)
+	if err != nil {
+		t.Fatalf("读配置失败: %v", err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "ai.json")
+	if err := os.WriteFile(cfgPath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := conf.OpenPath(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := store.Get()
+	if c.ActiveProfile == "" || c.ActiveModel == "" || c.VisionProfile == "" || c.VisionModel == "" {
+		t.Fatal("配置缺活动档案/模型或视觉档案（空文本贴图走视觉中转，需视觉档案）")
+	}
+
+	// 测试图：标准库生成确定性 PNG（白底黑条），不依赖外部文件
+	img := image.NewRGBA(image.Rect(0, 0, 320, 120))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	for x := 40; x < 280; x += 60 {
+		draw.Draw(img, image.Rect(x, 30, x+30, 90), &image.Uniform{color.Black}, image.Point{}, draw.Src)
+	}
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBuf.Bytes())
+
+	d := &Diagnoser{Conf: store, DataDir: filepath.Dir(cfgPath), Emit: func(e Event) {}}
+	s := &Session{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	rep, err := d.Followup(ctx, s, c.ActiveProfile, c.ActiveModel, c.Effort, "", []string{dataURL}, 0)
+	if err != nil {
+		t.Fatalf("空文本+贴图不应报错（空 text 分段 omitempty 回归）: %v", err)
+	}
+	if len(rep.Text) == 0 {
+		t.Fatal("应返回非空回复")
+	}
 }

@@ -37,6 +37,7 @@ interface ChatItem {
   auth?: { id: string; path: string; reason: string; sensitive: boolean; done: string } // 授权卡（done: '' | 允许并记住 | 仅本次 | 已拒绝/超时）
   steps: Step[]
   stepsOpen?: boolean // 取证时间线展开态；缺省收起（一行摘要，点击展开）
+  rOpen?: boolean // 思考块展开态：流式期间展开跟随，轮结束自动收起（用户可再展开）
   streaming: boolean
 }
 
@@ -44,11 +45,19 @@ const items = ref<ChatItem[]>([])
 const busy = ref(false)
 // busy 持续时间（秒）——等待状态可视化：不只光标，动态图标 + 已持续秒数
 const busySec = ref(0)
-// 当前步号与首字等待（S4 等待可视化）：agentLoop 每步发 step 事件，
-// 首个 delta/reasoning/tool_call 到达即视为首字——慢在模型推理时用户知道它活着
-const stepNo = ref(0)
-const stepWait = ref(false)
-const stepWaitFrom = ref(0)
+// 阶段感知（真实进度）：工具按 FIFO 执行，「最后一个未完成的调用」= 正在执行的工具；
+// 正文 delta 在流 = 输出报告中；两者皆无 = 模型思考中。曾显示「第 N 步」循环号——
+// 与「取证 N 步」（工具调用次数）单位不同还撞名，并行批量后必然对不上，已删
+const outputting = ref(false)
+const activeToolName = computed(() => {
+  const c = curStream()
+  if (!c) return ''
+  for (let i = c.steps.length - 1; i >= 0; i--) {
+    const s = c.steps[i]
+    if (s.kind === 'call' && !s.done) return s.text
+  }
+  return ''
+})
 let busyTimer: number | undefined
 function startBusyTimer() {
   busySec.value = 0
@@ -162,25 +171,19 @@ let flushTimer: number | undefined
 function applyEvt(e: { kind: string; text: string; detail: string }) {
   const cur = curStream()
   if (!cur) return
-  // 任何模型产出（正文/思考/工具调用）都视为首字到达
-  if (e.kind === 'delta' || e.kind === 'reasoning' || e.kind === 'tool_call') {
-    stepWait.value = false
-  }
   switch (e.kind) {
-    case 'step':
-      stepNo.value = parseInt(e.text, 10) || 0
-      stepWait.value = true
-      stepWaitFrom.value = busySec.value
-      break
     case 'delta':
+      outputting.value = true // 正文在流（流式文字自证，不显示阶段标签）
       flushBuf.text += e.text
       scheduleFlush(cur)
       break
     case 'reasoning':
+      outputting.value = false // 思考流/工具执行到达即证明不在输出正文——跨步残留会让「模型思考中」失显
       flushBuf.reasoning += e.text
       scheduleFlush(cur)
       break
     case 'tool_call':
+      outputting.value = false
       cur.steps.push({ kind: 'call', text: e.text, detail: e.detail, done: false }); break
     case 'tool_result': {
       // FIFO 配对：工具按调用序执行、结果按序到达（并行批量同名调用是常态——
@@ -231,9 +234,8 @@ function pushAssistant() {
   applySeq.value = 0
   pendingEvts.clear()
   clearGapTimer()
-  stepNo.value = 0
-  stepWait.value = false
-  items.value.push({ kind: 'assistant', text: '', reasoning: '', steps: [], streaming: true })
+  outputting.value = false
+  items.value.push({ kind: 'assistant', text: '', reasoning: '', steps: [], rOpen: true, streaming: true })
   stickBottom.value = true
 }
 function finishStream(err?: string) {
@@ -242,11 +244,14 @@ function finishStream(err?: string) {
   flushPendingSkipHoles()
   clearGapTimer()
   stopBusyTimer()
-  stepNo.value = 0
-  stepWait.value = false
+  outputting.value = false
   const arr = items.value
   for (let i = arr.length - 1; i >= 0; i--) {
-    if (arr[i].kind === 'assistant' && arr[i].streaming) { arr[i].streaming = false; break }
+    if (arr[i].kind === 'assistant' && arr[i].streaming) {
+      arr[i].streaming = false
+      arr[i].rOpen = false // 思考块收起（标题同转「思考过程」）——报告是主角，过程让位
+      break
+    }
   }
   // 阻塞授权下正常结束时不应有未决卡；仍有=本轮被停止/超时中断，标失效防可点残卡
   for (const it of arr) {
@@ -647,8 +652,11 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
         <!-- 专家回复 -->
         <div v-else class="msg-ai">
           <!-- 思考过程（折叠；流式时展开态随收到的增量自动滚） -->
-          <details v-if="it.reasoning" class="ai-reasoning" open>
-            <summary>思考中…</summary>
+          <!-- 思考过程：流式期间展开跟随、标题「思考中…」；轮结束自动收起、
+               标题转「思考过程」——曾写死「思考中…」，结束后永远显示在思考的假象 -->
+          <details v-if="it.reasoning" class="ai-reasoning" :open="it.rOpen"
+            @toggle="it.rOpen = ($event.target as HTMLDetailsElement).open">
+            <summary>{{ it.streaming ? '思考中…' : '思考过程' }}</summary>
             <pre>{{ it.reasoning }}</pre>
           </details>
           <!-- 取证时间线：默认收起为一行摘要（步数 + 最新动作实时跳动），点击展开；
@@ -686,8 +694,11 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
           </div>
           <div v-if="busy && it.streaming" class="ai-wait-v2">
             <span class="ai-spinner"></span>
-            <span>正在分析<template v-if="stepNo > 0"> · 第 {{ stepNo }} 步</template></span>
-            <span v-if="stepNo > 0 && stepWait && busySec > stepWaitFrom" class="ai-stepwait">等待首字 {{ busySec - stepWaitFrom }}秒</span>
+            <span>正在分析</span>
+            <!-- 阶段标注只在「看不见动静」时出现：取证中·工具名（等授权/慢扫描时）/
+                 模型思考中（推理）；正文在流时自证，不加多余标签 -->
+            <span v-if="activeToolName" class="ai-phase acc">取证中 · {{ activeToolName }}</span>
+            <span v-else-if="!outputting" class="ai-phase">模型思考中</span>
             <span class="ai-elapsed" v-if="busySec > 0">{{ fmtElapsed(busySec) }}</span>
           </div>
 
@@ -896,7 +907,8 @@ const ctxNote = computed(() => { // 上下文规模提示（模型级 ctx × 70%
   background: var(--accent-soft);
   border-radius: 999px; padding: 1px 6px;
 }
-.ai-stepwait { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+.ai-phase { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+.ai-phase.acc { color: var(--accent-strong); }
 @keyframes ai-spin { to { transform: rotate(360deg); } }
 
 /* 用户消息 */

@@ -2,12 +2,13 @@
 
 # ⌖ LogHunter
 
-**本地大日志快速排查工具**
+**本地大日志排查 + AI 根因定位**
 
-拖拽多个日志文件（支持 GB 级），关键字 / 正则 / 时间范围 / 级别组合查询快速定位问题。
-纯本地运行 · 索引全内存 · 不落盘 · 零残留
+拖入 GB 级日志：秒级组合查询锁定线索，错误聚类一眼看清有几种错，内置 AI 分析专家自主取证给出带证据的根因结论。
 
-[下载最新版](https://github.com/macaoyxx/log-hunter/releases/latest) · [为什么快](#为什么用-loghunter) · [AI 诊断](#错误聚类与-ai-诊断)
+**拖入日志 → 查询 / 聚类 → AI 取证定根因** ｜ 纯本地运行 · 索引全内存 · 不落盘 · 零残留
+
+[下载最新版](https://github.com/macaoyxx/log-hunter/releases/latest) · [AI 诊断](#错误聚类与-ai-诊断) · [为什么快](#为什么用-loghunter) · [架构](#架构)
 
 ![首页](docs/assets/product/home.png)
 
@@ -30,10 +31,11 @@
 | | |
 |---|---|
 | ⚡ **快** | 加载 + 建索引 ~1.4 s/GB；时间 / 级别 **10ms 索引直查**；任意正则 400ms 级全扫，Go RE2 线性时间不会灾难性回溯卡死 |
+| 🧠 **AI 专家** | 任意 OpenAI 兼容端点；自主取证（搜索 / 堆栈整块 / 跨文件链路 / 读源码须你授权），引用可点击回查原文——**不瞎编** |
 | 🧵 **合** | 多节点日志一键「时间合并」归并成单一时间线；无时间戳的堆栈 / SQL 续行自动跟随主行，上下文不丢 |
 | 📦 **省** | 免安装单文件 exe（约 12MB），双击就用，无部署无依赖 |
 | 🖱️ **稳** | 百万条命中流畅滚动——查询只存偏移，预览按窗口惰性生成 |
-| 🔒 **安全** | 纯本地运行日志不出机器，索引自内存一键清空零残留 |
+| 🔒 **安全** | 纯本地运行日志不出机器，AI 仅在你显式配置后启用，读源码逐目录授权、敏感文件逐次确认 |
 | 🇨🇳 **中文友好** | GBK/UTF-8 自动转码、GBK zip 正确解压、全中文界面 |
 
 ## 与常见文本工具的差异
@@ -79,11 +81,11 @@
 - **本地聚类**（无 AI、确定性）：当前结果集按行模板归一分组（时间戳/数字/GUID/IP → 占位符），组列表展示模板/计数/级别/时间范围/占比；点组或样本行跳转联动结果表；>10 万行均匀采样并标注口径
 
 ### AI 诊断（opt-in）
-- **内置日志分析专家（自主 Agent）**：专家 system prompt 内置证据纪律——根因假设按置信度排序（附支持/反对证据），全程【事实】【推断】【待验证】三态标注；引用双口径可校验：`[行 N]` 跳结果表、`[文件名:行号]` 开上下文面板，编造的引用越界标红
-- **自主取证**（function calling 循环，只读影子查询不破坏你的结果集）：search / get_context / get_line / histogram / cluster；取证时间线默认收起、进行中步骤动态可辨，展开看每步参数与返回
-- **源码读取授权（human-in-the-loop）**：AI 请求读源码/文档时弹授权卡（允许并记住 / 仅本次 / 拒绝，目录授权整棵子树有效）；yml/env/json/密钥类敏感文件逐文件逐次授权；拖入文件/文件夹到输入框 = 路径附件（不进左侧日志列表）
-- **多厂商档案 + 会话内切模型**：N 个 OpenAI 兼容端点档案，主对话与视觉模型跨厂商组合；模型级 ctx/vision/maxOut 能力配置（常见模型自动预填）；会话顶栏随时切换续聊；贴图走视觉模型转述（只忠实提取、转述可折叠核对）
-- **产出受控**：write_doc 仅在明确要求时落本次会话报告目录；AI 配置存独立 data/ai.json，不配置不启用，纯本地产品定位不变
+- **日志分析专家（自主 Agent）**：证据纪律内置——根因假设按置信度排序（附支持/反对证据），【事实】【推断】【待验证】三态标注；`[行 N]` 跳结果表、`[文件名:行号]` 开上下文面板，编造的引用越界标红
+- **自主取证**（只读影子查询，不破坏你的结果集）：search（文件过滤+命中总数）/ get_context / **get_stack（异常堆栈整块展开）/ follow（按请求ID·线程名跨文件拉全链路，合并时间序）** / cluster / histogram；独立取证**并行发起**，等待态实时显示当前在取证哪个工具
+- **读源码须授权（human-in-the-loop）**：find_files 定位 → read_source 阅读；授权卡三选项（允许并记住/仅本次/拒绝，目录整棵子树有效），yml/env/json 密钥类敏感文件逐次确认；拖入文件/文件夹 = 路径附件
+- **多厂商 + 会话内切模型**：OpenAI 兼容端点档案，主对话与视觉模型跨厂商组合；模型级 ctx/vision/maxOut 自动预填；贴图走视觉转述（可折叠核对）
+- **产出受控**：write_doc 仅在明确要求时落会话报告目录；配置存独立 data/ai.json，不配置不启用
 
 ### 界面
 - **昼夜主题**：右上角 🌗/☀️/🌙 三态切换——自动（跟随系统，默认并记忆选择）/ 日间（暖白纸感）/ 夜巡（碳黑观测台）；切换 250ms 背光过渡，窗框颜色随系统；表面四级层级 + 信号色板，浮层与徽章在两主题下均清晰可辨
@@ -120,43 +122,42 @@
 
 ```
 internal/logscan/          核心引擎（纯库，无 UI 依赖）
-├── detect.go    格式探测（内置模板 + JSON 行），探测期锁定时间戳 layout，
-│                空格毫秒规范化（AgileBPM），级别有效命中双分制优选
-├── encoding.go  GBK/UTF-8 探测与转码（关键字按文件编码匹配）
-├── lines.go     分块并行读（16MB 块、边界对齐换行）、缓冲池、顺序读游标
-├── indexer.go   内存行索引：每行 偏移/时间戳/级别 平行数组（17B/行），
-│                建索引时顺带预计算级别计数与最长行
-├── merge.go     时间合并排序（锚点 key + 索引排序 + 置换环原地重排）、
-│                (FileID,Offset) 分组顺序读
-├── matcher.go   文本匹配器：包含词/排除词/正则按编码预转换
-├── scanner.go   全文件并行扫描（只收集偏移与行长，不做结果构建）
-├── query 路径   时间/级别条件 → 内存索引筛候选 → 候选行文本匹配；
-│                无时间条件 → 并行全扫；预览延迟到结果窗口生成；
-│                无条件+平铺 → 全览零物化（纯索引视图，永不截断）
-├── context.go   上下文读取（窗口倍增法定位前后 N 行）
-├── resultlimit.go 结果条数上限按物理内存自适应（200 万~2000 万 clamp）
-├── unzip.go     zip 解压：内容级二进制校验（前 16KB 含 NUL 跳过）、GBK 文件名、
-│                Zip Slip 防护、加密/嵌套跳过、临时目录生命周期
-└── session.go   会话管理：文件增删（多文件并行加载）/一键清空/查询执行/
-                 结果三态/流式导出/内存治理（大结果替换后归还系统）
-app.go                     Wails 绑定层（进度事件、对话框、剪贴板、自动更新编排）
-frontend/src/              Vue 3 界面
-├── App.vue                布局与联动（清空重置/级别点击/高亮词传递/更新浮层）
-├── QueryBar.vue           搜索框+筛选链+高级条件+正则模板库+历史+时间快捷段
-├── ResultTable.vue        表头+单行横向滚动+虚拟滚动（槽位复用）+分段+逐条导航
-├── ContextPanel.vue       右侧上下文面板（全文、高亮、复制本行/全部、目标居中）
-├── ClusterPanel.vue       错误聚类面板（模板分组/占比/跳转联动）
-├── AiPanel.vue            AI 专家会话面板（流式/取证时间线/授权卡/追问）
-├── AiSettings.vue         AI 设置（厂商主从双栏/模型能力/目录授权）
-├── HighlightText.vue      分段高亮组件（防 HTML 注入）
-└── TimePicker.vue         自绘日期时间选择器
-internal/ai/               AI 诊断（纯库分层：client 协议 / conf 配置 / diag 编排）
-cmd/logscan-bench/         性能验收基准（生成 1GB 混合日志并计时）
-cmd/stress-bench/          压力基准（20GB 双模式：单文件/10 文件，全环节耗时+内存采样）
-tools/packzip/             跨平台 zip 压缩工具（发版脚本用，Go 标准库）
-tools/genicon/             应用图标生成（SDF 绘制 → PNG/ICO）
-internal/appconf/          配置持久化（exe 同级 data/config.json：主题 + 查询历史）
-internal/update/           应用内自动更新（下载/sha256 校验/解压/rename 自替换）
+├── detect.go / encoding.go   格式探测（锁定时间戳 layout）与 GBK/UTF-8 转码
+├── lines.go / scanner.go     分块并行读（16MB 块边界对齐换行）、全文件并行扫描
+├── indexer.go                内存行索引：偏移/时间戳/级别平行数组（17B/行），
+│                             建索引顺带预计算级别计数与最长行
+├── merge.go / matcher.go     时间合并（锚点 key + 置换环原地重排）/ 按编码预转换匹配器
+├── query 路径                时间/级别 → 索引筛候选 → 文本匹配；无条件+平铺 →
+│                             全览零物化（纯索引视图，永不截断）
+├── cluster.go                错误聚类（模板归一+指纹分组）+ AI 影子查询
+│                             （SideQuery/SideStack/SideFollow——只读，绝不污染结果集）
+├── context.go / histogram.go 上下文读取（窗口倍增）/ 时间直方图惰性聚合
+├── resultlimit.go / unzip.go 结果上限内存自适应 / zip 解压（内容级校验+零残留）
+└── session.go                会话管理：文件增删/查询执行/结果三态/流式导出/内存治理
+
+internal/ai/                AI 诊断（纯库三层，单向依赖 logscan）
+├── client/     OpenAI 兼容协议：SSE 流式（正文/思考/工具调用三通道）+ /models
+├── conf/       档案与模型能力（ctx/vision/maxOut + 内置能力表），存 data/ai.json
+└── diag/       专家编排：agent 循环（并行取证）· 9 个取证工具 · 源码授权
+                （human-in-the-loop）· 会话与上下文预算
+
+app.go / ai.go / main.go    Wails 绑定层：引擎包装（进度/对话框/剪贴板/更新）、
+                            AI 绑定（诊断/追问/授权回执）、入口
+frontend/src/               Vue 3 界面（手写组件，无 UI 框架/无 router/无状态库）
+├── App.vue / SideRail.vue / ThemePopover.vue    布局联动 / 左指挥轨 / 外观
+├── QueryBar.vue / TimePicker.vue                查询：筛选链/模板库/历史/日历
+├── ResultTable.vue / HighlightText.vue          虚拟滚动结果表 / 防注入高亮
+├── ContextPanel.vue / ContextMenu.vue           上下文详情 / 右键菜单（复制/标记/问AI）
+├── TimeHistogram.vue                            时间直方图（拖框联动重查）
+├── ClusterPanel.vue                             错误聚类面板
+├── AiPanel.vue / AiSettings.vue / aiMd.ts       AI 会话/取证时间线 · 厂商配置 · md 渲染
+
+internal/appconf/          配置持久化（data/config.json：主题 + 查询历史）
+internal/update/           应用内自动更新（下载/sha256 校验/自替换）
+cmd/logscan-bench/         性能验收基准（1GB 生成并计时）
+cmd/stress-bench/          压力基准（20GB 双模式：单文件/10 文件，耗时+内存采样）
+tools/genicon/             应用图标生成（SDF 多档独立渲染 → PNG/ICO 双产出）
+tools/packzip/             跨平台 zip 压缩（发版脚本用）
 scripts/                   发版脚本（bash）：package.sh 打包 / publish.sh 确认后发布
 ```
 
@@ -199,6 +200,7 @@ go run ./tools/genicon   # 重新生成应用图标（build/appicon.png + icon.i
 | [Wails 拖放陷阱](.memory/wails-dragdrop.md) | 文件拖放必须走 OnFileDrop 注册（preventDefault + Windows 桥接都挂在其内部），EventsOn 直听永远收不到 |
 | [结果表画布宽与列宽机制](.memory/result-canvas-layout.md) | 画布宽必须随渲染窗口实测伸缩（预估/grow-only/字符估算三种错法均实测有坑）；flex 子项 nowrap 的 min-width:auto 会顶开 width 使省略失效 |
 | [引擎共享状态并发铁律](.memory/session-concurrency.md) | results/stats/mode 等五字段读写必须在 s.mu 锁内（锁外写曾致崩溃级竞争）；lastEmit 原子化与去重 TOCTOU 复查同批修复 |
+| [AI 专家面板契约](.memory/ai-agent-panel.md) | 工具结果 FIFO 配对 + 轮末关闭未完成步骤（并行批量同名调用防永动 spinner）；面板 v-show 常驻叉叉只藏不杀（销毁丢 busy/事件落点三连锁） |
 
 ## License
 

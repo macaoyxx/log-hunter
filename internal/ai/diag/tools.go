@@ -30,7 +30,7 @@ var searchTool = client.ToolDefinition{
 	Type: "function",
 	Function: client.FunctionSpec{
 		Name:        "search",
-		Description: "在全部已加载日志中搜索（不限于当前结果集）。返回命中总数 + 命中行（文件名:行号 + 原文 + 时间），最多 limit 条（默认 30，上限 50）——总数大时请收窄条件而不是翻页。需要看某行前后文用 get_context，看整段异常堆栈用 get_stack。",
+		Description: "在全部已加载日志中搜索（不限于当前结果集）。返回命中总数 + 命中行（文件名:行号 + 原文 + 时间），最多 limit 条（上限 500）——命中超出时可用 offset 续读穷尽；超大命中集（数万+）请转 cluster 聚类视角。需要看某行前后文用 get_context，看整段异常堆栈用 get_stack。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -39,7 +39,8 @@ var searchTool = client.ToolDefinition{
 				"levels":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "级别过滤（0=TRACE..5=FATAL）"},
 				"timeStart": map[string]any{"type": "string", "description": "起始时间，格式 2024-01-15 10:23:45"},
 				"timeEnd":   map[string]any{"type": "string", "description": "结束时间"},
-				"limit":     map[string]any{"type": "integer", "description": "返回条数上限（默认 30，最大 50）"},
+				"limit":     map[string]any{"type": "integer", "description": "返回条数上限（最大 500）"},
+				"offset":    map[string]any{"type": "integer", "description": "跳过前 N 条命中（续读窗口；如上次展示到第 500 条则传 500）"},
 				"files":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "限定文件（文件名或基名，如 [\"app1.log\"]；缺省=全部文件）"},
 			},
 		},
@@ -130,11 +131,12 @@ var followTool = client.ToolDefinition{
 	Type: "function",
 	Function: client.FunctionSpec{
 		Name:        "follow",
-		Description: "按关联标识跨全部文件拉取完整链路：给请求ID / traceId / 线程名 / 订单号等能把多文件串起来的值，返回所有相关行（按时间合并排序）+ 各文件命中数。跨节点/跨服务排障首选；标识太宽会截断（500 行上限），请换更精确的值。",
+		Description: "按关联标识跨全部文件拉取链路：给请求ID / traceId / 线程名 / 订单号等能把多文件串起来的值，返回相关行（按时间合并排序）+ 各文件命中数。跨节点/跨服务排障首选；标识太宽会截断（单次 1000 行上限），可用 offset 续读剩余，或换更精确的值。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id": map[string]any{"type": "string", "description": "关联标识（整串匹配，不拆词）"},
+				"id":     map[string]any{"type": "string", "description": "关联标识（整串匹配，不拆词）"},
+				"offset": map[string]any{"type": "integer", "description": "跳过合并时间序前 N 行（截断后续读；如上次读到第 1000 行则传 1000）"},
 			},
 			"required": []string{"id"},
 		},

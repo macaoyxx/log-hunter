@@ -326,6 +326,7 @@ func (a *App) toolSearch(ctx context.Context, args string) string {
 		TimeStart string   `json:"timeStart"`
 		TimeEnd   string   `json:"timeEnd"`
 		Limit     int      `json:"limit"`
+		Offset    int      `json:"offset"`
 		Files     []string `json:"files"`
 	}
 	if err := json.Unmarshal([]byte(args), &p); err != nil {
@@ -353,7 +354,7 @@ func (a *App) toolSearch(ctx context.Context, args string) string {
 	res, err := a.session.SideQuery(ctx, &logscan.QuerySpec{
 		Keywords: strings.Fields(p.Keyword), Regex: p.Regex, Levels: p.Levels,
 		TSStart: start, TSEnd: end, FileIDs: fileIDs,
-	}, p.Limit)
+	}, p.Offset, p.Limit)
 	if err != nil {
 		return "搜索失败: " + err.Error()
 	}
@@ -379,16 +380,20 @@ func (a *App) toolGetStack(ctx context.Context, args string) string {
 // toolFollow follow：按关联标识跨文件全链路拉取（合并时间序 + 各文件命中数）
 func (a *App) toolFollow(ctx context.Context, args string) string {
 	var p struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		Offset int    `json:"offset"`
 	}
 	if err := json.Unmarshal([]byte(args), &p); err != nil {
 		return "参数错误: " + err.Error()
 	}
-	rows, capped, err := a.session.SideFollow(ctx, p.ID)
+	rows, capped, err := a.session.SideFollow(ctx, p.ID, p.Offset)
 	if err != nil {
 		return "拉取失败: " + err.Error()
 	}
 	if len(rows) == 0 {
+		if p.Offset > 0 {
+			return fmt.Sprintf("标识 %q 从 offset=%d 起无更多行（已读完全部）", p.ID, p.Offset)
+		}
 		return "没有找到包含该标识的行（确认标识拼写；线程名/通用词可能太宽或根本不存在）"
 	}
 	cnt := map[string]int{}
@@ -402,7 +407,8 @@ func (a *App) toolFollow(ctx context.Context, args string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "标识 %q 全链路 %d 行（合并时间序）", p.ID, len(rows))
 	if capped {
-		b.WriteString("，已达 500 行上限截断——标识太宽，请换更精确的值")
+		fmt.Fprintf(&b, "，已达 %d 行窗口上限截断——可用 offset=%d 续读，或换更精确的标识",
+			len(rows), p.Offset+len(rows))
 	}
 	b.WriteString("。各文件命中：")
 	for i, f := range order {
@@ -445,7 +451,7 @@ func (a *App) toolGetLine(ctx context.Context, args string) string {
 	if err != nil {
 		return "读取失败: " + err.Error()
 	}
-	return fmt.Sprintf("%s:%d 完整原文：\n%s", row.File, row.LineNo, row.Text)
+	return fmt.Sprintf("%s:%d 完整原文（该行共 %d 字节）：\n%s", row.File, row.LineNo, len(row.Text), row.Text)
 }
 
 func (a *App) toolHistogram(ctx context.Context, args string) string {
@@ -529,19 +535,25 @@ func parseAgentTime(s string) (int64, error) {
 	return 0, fmt.Errorf("无法解析时间: %q（格式 2024-01-15 10:23:45）", s)
 }
 
-// formatSideRows 影子查询结果 → 给模型的文本（命中总数口径 + 文件名:行号 时间 [级别] 文本）
+// formatSideRows 影子查询结果 → 给模型的文本（命中总数口径 + 窗口序号 + 文件名:行号 时间 [级别] 文本）
 func formatSideRows(res logscan.SideQueryResult) string {
-	if len(res.Rows) == 0 {
+	if res.Total == 0 {
 		return "没有命中（可放宽条件或换关键字）"
 	}
 	var b strings.Builder
 	switch {
 	case res.Capped:
-		fmt.Fprintf(&b, "命中 ≥%s 条，展示前 %d 条（规模大，请收窄条件或用 files 限定文件）：\n",
-			humanCount(int64(res.Total)), len(res.Rows))
-	case res.Total > len(res.Rows):
-		fmt.Fprintf(&b, "命中 %s 条，展示前 %d 条（更多请收窄条件）：\n",
-			humanCount(int64(res.Total)), len(res.Rows))
+		fmt.Fprintf(&b, "命中 ≥%s 条（规模大，请收窄条件或转 cluster），展示第 %d~%d 条：\n",
+			humanCount(int64(res.Total)), res.Offset+1, res.Offset+len(res.Rows))
+	case res.Offset >= res.Total:
+		fmt.Fprintf(&b, "命中 %s 条，offset=%d 已超出命中范围（已读完全部命中）：\n",
+			humanCount(int64(res.Total)), res.Offset)
+	case res.Offset+len(res.Rows) < res.Total:
+		fmt.Fprintf(&b, "命中 %s 条，展示第 %d~%d 条（可用 offset=%d 续读取剩余，或收窄条件）：\n",
+			humanCount(int64(res.Total)), res.Offset+1, res.Offset+len(res.Rows), res.Offset+len(res.Rows))
+	case res.Offset > 0:
+		fmt.Fprintf(&b, "命中 %s 条，展示第 %d~%d 条（已读完全部）：\n",
+			humanCount(int64(res.Total)), res.Offset+1, res.Offset+len(res.Rows))
 	default:
 		fmt.Fprintf(&b, "命中 %s 条：\n", humanCount(int64(res.Total)))
 	}

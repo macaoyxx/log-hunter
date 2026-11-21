@@ -41,16 +41,24 @@ const (
 	// clusterTemplateCap 模板展示/key 上限（rune）：分组区分度集中在前缀，截断控制内存
 	// （最坏 10 万组 × 256B key = 25MB 级，可承受）
 	clusterTemplateCap = 256
-	// clusterSampleTextCap 组内代表行的展示文本上限（字节，rune 安全截断）
-	clusterSampleTextCap = 800
-	// sideQueryMaxLimit 影子查询单次返回行数上限：agent 上下文防护（发更多只是浪费 token）
-	sideQueryMaxLimit = 50
-	// sideCountCap 命中总数计数上限：行凑够后继续计数给模型规模感，到顶即标
-	//「≥N」（精确计数要全文件扫，20GB 级不划算；上千条的量级判断足够）
-	sideCountCap = 1000
-	// followCap follow 工具拉取行数上限：全链路视角够用，又防宽标识
-	//（如通用线程名）一次灌爆上下文
-	followCap = 500
+	// clusterSampleTextCap 组内代表行/影子查询单行的展示文本上限（字节，rune 安全截断）。
+	// 放宽到 2KB：SQL/dump 行 800B 太紧，截断残句直接影响定位；超长行读全走 get_line
+	clusterSampleTextCap = 2048
+	// sideQueryMaxLimit 影子查询单次返回行数上限：中小规模命中一次拿全免翻页；
+	// 更大量级转 cluster 聚合（窗口物理上限），offset 续读兜底
+	sideQueryMaxLimit = 500
+	// sideOffsetMax 影子查询 offset 上限：防深翻页（跳过行虽只计数仍要扫候选）
+	sideOffsetMax = 5000
+	// sideCountCap 有文本条件的命中计数上限：找够行后继续只计数给模型规模感，
+	// 到顶标「≥N」提前终止——无文本条件走索引精确计数（零成本），此处仅兜文本过滤路径
+	sideCountCap = 100_000
+	// followCap follow 工具拉取行数上限：链路尾部用 offset 续读补，不必一次灌爆；
+	// 1000 行最坏约 2MB 文本，是历史预算可承受的边界
+	followCap = 1000
+	// followCollectCap follow 全收集的命中上限：offset 是全局时间序偏移需全收集，
+	// 但 10 万命中时模型（步数×窗口）已读不完、时间序精确无意义，封顶防极端
+	// 宽标识的全扫耗时与内存爆炸（10 万 × 40B ≈ 4MB）
+	followCollectCap = 100_000
 )
 
 // ---- 数据结构（JSON 给前端）----
@@ -388,23 +396,32 @@ func (s *Session) fetchRowAt(gi int) ResultRow {
 
 // ---- 影子查询（agent 取证专用，绝不改变会话结果状态）----
 
-// SideQueryResult 影子查询结果：Rows 展示行；Total 命中总数（Capped=true 时为
-// 下限——计数到 sideCountCap 即停，真实总数更大）。给模型规模感（几十条逐条看、
-// 上千条换条件收窄），不再只有「前 50 条」盲区
+// SideQueryResult 影子查询结果：Rows 展示窗口（Offset 为窗口起始命中序号）；
+// Total 命中总数——无文本条件时为精确值，有文本条件且 Capped=true 时为下限
+// （计数到 sideCountCap 提前终止，真实总数更大）
 type SideQueryResult struct {
 	Rows   []SideRow `json:"rows"`
 	Total  int       `json:"total"`
+	Offset int       `json:"offset"`
 	Capped bool      `json:"capped"`
 }
 
 // SideQuery 一次性查询（不写 s.results / s.stats / s.mode，主结果集不受影响）：
 // agent 自主取证用——若走 RunQuery 主路径会把用户屏幕上的结果集覆盖掉。
-// limit 钳到 sideQueryMaxLimit；行凑够后继续计数到 sideCountCap 再停
-// （计数与取行同趟扫描，稀有关键字最坏全扫与改造前同量级，常见关键字只多扫一小段）；
+// offset 跳过前 N 条命中（续读窗口），limit 钳到 sideQueryMaxLimit。
+// 计数分场景：无文本条件（纯时间/级别/文件过滤）命中数从索引候选精确算出（零成本、
+// 不读文本）；有文本条件才逐行读+匹配，找够窗口后继续只计数到 sideCountCap 提前终止
+// （稀有关键字最坏全扫与改造前同量级，常见关键字只多扫一小段）。
 // spec.FileIDs 为空 = 全部已加载文件。全程持读锁
-func (s *Session) SideQuery(ctx context.Context, spec *QuerySpec, limit int) (SideQueryResult, error) {
+func (s *Session) SideQuery(ctx context.Context, spec *QuerySpec, offset, limit int) (SideQueryResult, error) {
 	if limit <= 0 || limit > sideQueryMaxLimit {
 		limit = sideQueryMaxLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > sideOffsetMax {
+		offset = sideOffsetMax
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -425,9 +442,9 @@ func (s *Session) SideQuery(ctx context.Context, spec *QuerySpec, limit int) (Si
 		}
 	}
 
-	res := SideQueryResult{Rows: make([]SideRow, 0, limit)}
+	res := SideQueryResult{Rows: make([]SideRow, 0, limit), Offset: offset}
 	for _, e := range targets {
-		if res.Total >= sideCountCap {
+		if res.Capped {
 			break
 		}
 		if ctx.Err() != nil {
@@ -444,58 +461,85 @@ func (s *Session) SideQuery(ctx context.Context, spec *QuerySpec, limit int) (Si
 		if hasTimeCond || levels != nil {
 			cands = e.idx.filterCandidates(spec.TSStart, spec.TSEnd, levels)
 		}
+
+		if matcher.empty() {
+			// 无文本条件：命中集 = 候选行（cands 或全量），总数精确零成本（只数不读），
+			// 窗口取本文件命中段与全局 [offset, offset+limit) 的交集
+			n := e.idx.LineCount()
+			if cands != nil {
+				n = len(cands)
+			}
+			fileStart := res.Total // 本文件首条命中的全局序号
+			res.Total += n
+			lo := offset - fileStart
+			if lo < 0 {
+				lo = 0
+			}
+			hi := offset + limit - fileStart
+			if hi > n {
+				hi = n
+			}
+			if lo >= hi {
+				continue
+			}
+			sr := &seqReader{lf: e.lf}
+			for k := lo; k < hi; k++ {
+				li := k
+				if cands != nil {
+					li = int(cands[k])
+				}
+				off := e.idx.offsets[li]
+				raw, err := sr.line(off)
+				if err != nil {
+					return SideQueryResult{}, fmt.Errorf("%s: %w", e.Name, err)
+				}
+				res.Rows = append(res.Rows, SideRow{File: e.Name, FileID: e.ID, LineNo: int64(li + 1),
+					Offset: off, TS: e.idx.ts[li], Level: e.idx.levels[li],
+					Text: capSampleText(decodeLine(e.enc, raw))})
+			}
+			continue
+		}
+
+		// 有文本条件：逐行读+匹配；命中的全局序号 = res.Total（跨文件累计），
+		// 跳过 offset 之前的命中、取 [offset, offset+limit) 窗口；计数到 sideCountCap 提前终止
 		sr := &seqReader{lf: e.lf}
 		var readErr error
-		take := func(li int) bool {
-			off := e.idx.offsets[li]
-			line, err := sr.line(off)
+		iterateCands(cands, e.idx.LineCount(), func(li int) bool {
+			if res.Total >= sideCountCap {
+				res.Capped = true
+				return false
+			}
+			line, err := sr.line(e.idx.offsets[li])
 			if err != nil {
 				readErr = fmt.Errorf("%s: %w", e.Name, err)
 				return false
 			}
+			if !matcher.match(line) {
+				return true
+			}
+			idx := res.Total
 			res.Total++
-			if len(res.Rows) < limit {
+			if idx >= offset && idx < offset+limit {
 				res.Rows = append(res.Rows, SideRow{File: e.Name, FileID: e.ID, LineNo: int64(li + 1),
-					Offset: off, TS: e.idx.ts[li], Level: e.idx.levels[li],
+					Offset: e.idx.offsets[li], TS: e.idx.ts[li], Level: e.idx.levels[li],
 					Text: capSampleText(decodeLine(e.enc, line))})
 			}
 			return true
-		}
-		// 逐行读 + 匹配：行取够后继续只计数（规模感），总数到 sideCountCap 即停。
-		// 顺序读游标即可（无时间条件的全文件文本匹配最坏扫整文件——与改造前
-		// 「凑够即停」的稀有关键字路径同量级）
-		if matcher.empty() {
-			iterateCands(cands, e.idx.LineCount(), func(li int) bool {
-				return take(li) && res.Total < sideCountCap
-			})
-		} else {
-			iterateCands(cands, e.idx.LineCount(), func(li int) bool {
-				if res.Total >= sideCountCap {
-					return false
-				}
-				line, err := sr.line(e.idx.offsets[li])
-				if err != nil {
-					readErr = fmt.Errorf("%s: %w", e.Name, err)
-					return false
-				}
-				return !matcher.match(line) || take(li)
-			})
-		}
+		})
 		if readErr != nil {
 			return SideQueryResult{}, readErr
 		}
 	}
-	res.Capped = res.Total >= sideCountCap
 	return res, nil
 }
 
 // SideStack 异常块整块读取（agent 工具 get_stack）：向前找主行（最近一条有时间戳
 // 的行——异常主行通常带时间戳），向后收到下一条有时间戳的行为止（堆栈/SQL 续行
 // 天然无时间戳）。一次给齐全块原文（带行号），替代 3~5 次 get_context 拼接；
-// 上限 200 行 / 64KB
+// 上限 500 行 / 256KB，两种截断都显式标注并引导 get_context 续读
 func (s *Session) SideStack(fileName string, line int64) ([]SideRow, error) {
-	const maxLines = 200
-	const maxBytes = 64 << 10
+	const maxLines = 500
+	const maxBytes = 256 << 10
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e := s.findEntryByNameLocked(fileName)
@@ -532,30 +576,57 @@ func (s *Session) SideStack(fileName string, line int64) ([]SideRow, error) {
 			Offset: off, TS: e.idx.ts[i], Level: e.idx.levels[i], Text: text})
 		bytes += len(text)
 		if bytes >= maxBytes {
-			out[len(out)-1].Text += "…（已达 64KB 上限截断，需要更多用 get_context 续读）"
+			out[len(out)-1].Text += "…（已达 256KB 上限截断，需要更多用 get_context 续读）"
 			break
 		}
+	}
+	// 字节未到顶但行数到顶（后面仍有续行）：同样标注，避免静默截断
+	if bytes < maxBytes && end+1 < e.idx.LineCount() && e.idx.ts[end+1] == 0 {
+		out[len(out)-1].Text += "…（已达 500 行上限截断，需要更多用 get_context 续读）"
 	}
 	return out, nil
 }
 
-// SideFollow 跨全部文件按关联标识全量拉取（agent 工具 follow）：给请求 ID/线程名/
+// SideFollow 跨全部文件按关联标识拉取（agent 工具 follow）：给请求 ID/线程名/
 // 订单号等任意标识，一次给齐散落在所有文件的相关行，按时间戳合并排序成单一时间线
-// （多节点交叉排查的核心动线——search 只给前 50 条且按文件分堆，串不起全链路）。
-// 上限 followCap 行，超出截断并告知换更精确的标识。全程持读锁
-func (s *Session) SideFollow(ctx context.Context, id string) (rows []SideRow, capped bool, err error) {
+// （多节点交叉排查的核心动线——search 只给命中窗口且按文件分堆，串不起全链路）。
+// offset 跳过合并时间序前 N 行（截断后续读窗口），窗口上限 followCap 行；
+// capped = 从 offset 起仍有剩余（引导续读或换更精确的标识）。全程持读锁
+func (s *Session) SideFollow(ctx context.Context, id string, offset int) (rows []SideRow, capped bool, err error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, false, errors.New("缺少关联标识")
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > sideOffsetMax {
+		offset = sideOffsetMax
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.entries) == 0 {
 		return nil, false, errors.New("没有已加载的文件")
 	}
+
+	// 收集阶段只存轻量命中（文件/行号/偏移/时间戳/级别），不存展示文本。
+	// 关键：offset 是「全局时间序」的偏移，必须收集全部命中再排序才准确——
+	// 按扫描序截断再排序会让跨文件时间交错的命中漏读/重读。
+	// 轻量结构（~40B/条）让全收集内存可控（百万命中 ~40MB，远小于全内存索引）。
+	type hit struct {
+		e     *FileEntry
+		li    int
+		off   int64
+		ts    int64
+		level int8
+	}
+	var hits []hit
 	for _, e := range s.entries {
-		if capped || ctx.Err() != nil {
-			break
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+		if len(hits) >= followCollectCap {
+			break // 收集到上限：剩余命中不再收集（10 万级时间序精确已无意义）
 		}
 		// 单标识按一个关键字整串匹配（标识含空格不拆词）
 		matcher, mErr := newTextMatcher([]string{id}, nil, "", false, e.enc)
@@ -564,10 +635,6 @@ func (s *Session) SideFollow(ctx context.Context, id string) (rows []SideRow, ca
 		}
 		sr := &seqReader{lf: e.lf}
 		for li := 0; li < e.idx.LineCount(); li++ {
-			if len(rows) >= followCap {
-				capped = true
-				break
-			}
 			raw, rErr := sr.line(e.idx.offsets[li])
 			if rErr != nil {
 				return nil, false, fmt.Errorf("%s: %w", e.Name, rErr)
@@ -575,21 +642,63 @@ func (s *Session) SideFollow(ctx context.Context, id string) (rows []SideRow, ca
 			if !matcher.match(raw) {
 				continue
 			}
-			rows = append(rows, SideRow{File: e.Name, FileID: e.ID, LineNo: int64(li + 1),
-				Offset: e.idx.offsets[li], TS: e.idx.ts[li], Level: e.idx.levels[li],
-				Text: capSampleText(decodeLine(e.enc, raw))})
+			if len(hits) >= followCollectCap {
+				break
+			}
+			hits = append(hits, hit{e, li, e.idx.offsets[li], e.idx.ts[li], e.idx.levels[li]})
 		}
 	}
 	if ctx.Err() != nil {
 		return nil, false, ctx.Err()
 	}
-	// 按时间戳稳定合并（同刻保持文件序）；无时间戳行（个别无时间文件）排前不散乱
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].TS != rows[j].TS {
-			return rows[i].TS < rows[j].TS
+
+	// 全局时间序稳定排序（同刻保持文件序）；无时间戳行（个别无时间文件）排前不散乱
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].ts != hits[j].ts {
+			return hits[i].ts < hits[j].ts
 		}
 		return false
 	})
+
+	// 窗口切片：跳过 offset 之前的命中，取 offset 起的 ≤ followCap 行；
+	// capped = 从 offset 起仍有剩余未读
+	if offset >= len(hits) {
+		return nil, false, nil
+	}
+	hits = hits[offset:]
+	if len(hits) > followCap {
+		hits = hits[:followCap]
+		capped = true
+	}
+
+	// 读窗口展示文本：按 (文件, 行号) 排序顺序读（防随机 IO），再按时间序回填
+	rows = make([]SideRow, len(hits))
+	order := make([]int, len(hits))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		if hits[order[a]].e.ID != hits[order[b]].e.ID {
+			return hits[order[a]].e.ID < hits[order[b]].e.ID
+		}
+		return hits[order[a]].li < hits[order[b]].li
+	})
+	var lastE *FileEntry
+	var sr *seqReader
+	for _, i := range order {
+		h := hits[i]
+		if h.e != lastE {
+			lastE = h.e
+			sr = &seqReader{lf: h.e.lf}
+		}
+		raw, rErr := sr.line(h.off)
+		if rErr != nil {
+			return nil, false, fmt.Errorf("%s: %w", h.e.Name, rErr)
+		}
+		rows[i] = SideRow{File: h.e.Name, FileID: h.e.ID, LineNo: int64(h.li + 1),
+			Offset: h.off, TS: h.ts, Level: h.level,
+			Text: capSampleText(decodeLine(h.e.enc, raw))}
+	}
 	return rows, capped, nil
 }
 
@@ -846,7 +955,7 @@ func (s *Session) SideLineText(fileName string, line int64) (SideRow, error) {
 	}
 	return SideRow{File: e.Name, FileID: e.ID, LineNo: line, Offset: off,
 		TS: e.idx.ts[li], Level: e.idx.levels[li],
-		Text: capSampleText(decodeLine(e.enc, raw))}, nil
+		Text: decodeLine(e.enc, raw)}, nil // 完整原文不截（超长行读全的唯一通路）
 }
 
 // findEntryByNameLocked 锁内版按名找条目（SideContext/SideLineText 已持读锁）

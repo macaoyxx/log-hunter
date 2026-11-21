@@ -118,7 +118,7 @@ func TestSideQuery(t *testing.T) {
 	// 影子查询：INFO 条件应命中 2 条
 	rows, err := s.SideQuery(context.Background(), &QuerySpec{
 		FileIDs: []int64{e.ID}, Keywords: []string{"INFO"},
-	}, 10)
+	}, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +143,8 @@ func TestSideQuery(t *testing.T) {
 		t.Fatalf("聚类应基于 1 条主结果: %+v", rep)
 	}
 
-	// limit 钳制：超上限收敛到 50
-	all, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}}, 5000)
+	// limit 钳制：超上限收敛到 sideQueryMaxLimit
+	all, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}}, 0, 5000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestSideFollowMerged(t *testing.T) {
 		t.Fatal(errs)
 	}
 	defer s.ClearAll()
-	rows, capped, err := s.SideFollow(context.Background(), "req=T100")
+	rows, capped, err := s.SideFollow(context.Background(), "req=T100", 0)
 	if err != nil || capped {
 		t.Fatalf("follow 失败/意外截断: %v %v", err, capped)
 	}
@@ -256,7 +256,7 @@ func TestSideFollowMerged(t *testing.T) {
 	}
 }
 
-// TestSideQueryTotal 命中总数口径：行按 limit 收、Total 全量计；超计数上限标 Capped
+// TestSideQueryTotal 命中总数口径：行按 limit 收、Total 全量计；超计数上限（10 万）标 Capped
 func TestSideQueryTotal(t *testing.T) {
 	var b strings.Builder
 	for i := 0; i < 60; i++ {
@@ -265,7 +265,7 @@ func TestSideQueryTotal(t *testing.T) {
 	s := newTestSession(t, b.String())
 	defer s.ClearAll()
 	e := s.Files()[0]
-	res, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}, Keywords: []string{"tick"}}, 10)
+	res, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}, Keywords: []string{"tick"}}, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,19 +273,19 @@ func TestSideQueryTotal(t *testing.T) {
 		t.Fatalf("应为 10 行/总数 60/未截断: rows=%d total=%d capped=%v", len(res.Rows), res.Total, res.Capped)
 	}
 
-	// 超 sideCountCap：Total 钳在 1000 并标 Capped
+	// 超 sideCountCap（10 万）：计数封顶提前终止并标 Capped
 	var big strings.Builder
-	for i := 0; i < 1100; i++ {
+	for i := 0; i < sideCountCap+500; i++ {
 		big.WriteString("2024-01-15 10:00:00.000 INFO tick\n")
 	}
 	s2 := newTestSession(t, big.String())
 	defer s2.ClearAll()
-	res2, err := s2.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{s2.Files()[0].ID}, Keywords: []string{"tick"}}, 10)
+	res2, err := s2.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{s2.Files()[0].ID}, Keywords: []string{"tick"}}, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res2.Capped || res2.Total != sideCountCap || len(res2.Rows) != 10 {
-		t.Fatalf("超上限应钳 1000 并标 Capped: %+v", res2)
+		t.Fatalf("超计数上限应封顶 10 万并标 Capped: rows=%d total=%d capped=%v", len(res2.Rows), res2.Total, res2.Capped)
 	}
 }
 
@@ -311,5 +311,215 @@ func TestFileIDsByNames(t *testing.T) {
 	}
 	if _, missed := s.FileIDsByNames([]string{"不存在"}); len(missed) != 1 {
 		t.Fatalf("未匹配名应报 missed: %v", missed)
+	}
+}
+
+// TestSideQueryOffset 文本条件下的 offset 续读窗口：前后窗口衔接无重无漏，offset 超出返回空窗口
+func TestSideQueryOffset(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 60; i++ {
+		fmt.Fprintf(&b, "2024-01-15 10:00:%02d.000 INFO tick id=%d\n", i%60, i)
+	}
+	s := newTestSession(t, b.String())
+	defer s.ClearAll()
+	e := s.Files()[0]
+
+	res0, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}, Keywords: []string{"tick"}}, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res0.Total != 60 || len(res0.Rows) != 10 || res0.Offset != 0 {
+		t.Fatalf("第一窗口: %+v", res0)
+	}
+
+	// 第二窗口：offset=10，应与第一窗口首尾衔接（行号单调递增、不重叠）
+	res1, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}, Keywords: []string{"tick"}}, 10, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1.Total != 60 || len(res1.Rows) != 10 || res1.Offset != 10 {
+		t.Fatalf("第二窗口: %+v", res1)
+	}
+	if res1.Rows[0].LineNo <= res0.Rows[9].LineNo {
+		t.Fatalf("窗口重叠: 第一窗口末行 %d，第二窗口首行 %d", res0.Rows[9].LineNo, res1.Rows[0].LineNo)
+	}
+
+	// offset 超出命中范围：空窗口但 Total 仍精确
+	res2, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}, Keywords: []string{"tick"}}, 60, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Total != 60 || len(res2.Rows) != 0 {
+		t.Fatalf("offset 超出应空窗口: %+v", res2)
+	}
+}
+
+// TestSideQueryPreciseCount 无文本条件（纯文件/级别过滤）命中数从索引精确计数（零成本），offset 窗口正确
+func TestSideQueryPreciseCount(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&b, "2024-01-15 10:00:00.000 INFO tick id=%d\n", i)
+	}
+	s := newTestSession(t, b.String())
+	defer s.ClearAll()
+	e := s.Files()[0]
+
+	res, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}}, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 100 || len(res.Rows) != 10 || res.Capped {
+		t.Fatalf("无文本条件应精确计数 100 且不 Capped: %+v", res)
+	}
+
+	res1, err := s.SideQuery(context.Background(), &QuerySpec{FileIDs: []int64{e.ID}}, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1.Total != 100 || len(res1.Rows) != 10 || res1.Rows[0].LineNo != 51 {
+		t.Fatalf("无文本条件 offset 窗口错误: %+v", res1)
+	}
+}
+
+// TestSideFollowOffset follow 续读窗口：offset 跳过合并序前 N 行，截断后续读衔接无重无漏
+func TestSideFollowOffset(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 1500; i++ {
+		fmt.Fprintf(&b, "2024-01-15 10:%02d:%02d.%03d INFO req=T9 step=%d\n", i/3600, i/60%60, i%60, i)
+	}
+	s := newTestSession(t, b.String())
+	defer s.ClearAll()
+
+	rows, capped, err := s.SideFollow(context.Background(), "req=T9", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != followCap || !capped {
+		t.Fatalf("首窗口应 %d 行且截断: len=%d capped=%v", followCap, len(rows), capped)
+	}
+
+	rows2, capped2, err := s.SideFollow(context.Background(), "req=T9", followCap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows2) != 500 || capped2 {
+		t.Fatalf("续读窗口应 500 行且读尽: len=%d capped=%v", len(rows2), capped2)
+	}
+	// 衔接：续读窗口首行时间戳 >= 首窗口末行（合并时间序无回退）
+	if rows2[0].TS < rows[len(rows)-1].TS {
+		t.Fatalf("续读窗口时间序回退: %d < %d", rows2[0].TS, rows[len(rows)-1].TS)
+	}
+}
+
+// TestSideFollowOffsetCrossFile 跨文件时间交错的 offset 续读：B(09:00) 时间早于
+// A(10:00) 但扫描序 A 在前——回归「扫描序截断再排序」会让 B 漏读、A 重复的 bug：
+// offset 是全局时间序偏移，必须全收集再排序
+func TestSideFollowOffsetCrossFile(t *testing.T) {
+	var a, b strings.Builder
+	for i := 0; i < 1000; i++ {
+		fmt.Fprintf(&a, "2024-01-15 10:00:%02d.%03d INFO id=T stepA=%d\n", i/1000, i%1000, i)
+		fmt.Fprintf(&b, "2024-01-15 09:00:%02d.%03d INFO id=T stepB=%d\n", i/1000, i%1000, i)
+	}
+	d := t.TempDir()
+	p1 := filepath.Join(d, "a.log")
+	p2 := filepath.Join(d, "b.log")
+	os.WriteFile(p1, []byte(a.String()), 0o644)
+	os.WriteFile(p2, []byte(b.String()), 0o644)
+	s := NewSession()
+	if _, errs, _ := s.AddFiles(context.Background(), []string{p1, p2}, nil); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	defer s.ClearAll()
+
+	rows1, capped1, err := s.SideFollow(context.Background(), "id=T", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows1) != followCap || !capped1 {
+		t.Fatalf("首窗口应 %d 行且截断: len=%d capped=%v", followCap, len(rows1), capped1)
+	}
+	rows2, capped2, err := s.SideFollow(context.Background(), "id=T", followCap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows2) != 1000 || capped2 {
+		t.Fatalf("续读应 1000 行且读尽: len=%d capped=%v", len(rows2), capped2)
+	}
+	// 时间序衔接无重叠：首窗口全 B(09:00 早)，续读全 A(10:00 晚)
+	if rows1[len(rows1)-1].TS >= rows2[0].TS {
+		t.Fatalf("首窗口末行时间应早于续读首行: %d >= %d", rows1[len(rows1)-1].TS, rows2[0].TS)
+	}
+	if !strings.Contains(rows1[0].Text, "stepB") {
+		t.Fatalf("首窗口应为时间最早的 B(09:00): %s", rows1[0].Text)
+	}
+	if !strings.Contains(rows2[0].Text, "stepA") {
+		t.Fatalf("续读应为时间较晚的 A(10:00): %s", rows2[0].Text)
+	}
+}
+
+// TestSideFollowCollectCap 命中超收集上限（10 万）时封顶：窗口仍正确返回、capped 保持，
+// 覆盖全收集路径的封顶分支（防极端宽标识内存/耗时爆炸）
+func TestSideFollowCollectCap(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < followCollectCap+500; i++ {
+		fmt.Fprintf(&b, "2024-01-15 10:%02d:%02d.%03d INFO id=T step=%d\n", i/60000%60, i/1000%60, i%1000, i)
+	}
+	s := newTestSession(t, b.String())
+	defer s.ClearAll()
+
+	rows, capped, err := s.SideFollow(context.Background(), "id=T", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != followCap || !capped {
+		t.Fatalf("首窗口应 %d 行且截断: len=%d capped=%v", followCap, len(rows), capped)
+	}
+	rows2, capped2, err := s.SideFollow(context.Background(), "id=T", followCap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows2) != followCap || !capped2 {
+		t.Fatalf("续读应 %d 行且仍截断（还有 ~9.9 万未读）: len=%d capped=%v", followCap, len(rows2), capped2)
+	}
+	if rows2[0].TS < rows[len(rows)-1].TS {
+		t.Fatalf("续读时间序回退: %d < %d", rows2[0].TS, rows[len(rows)-1].TS)
+	}
+}
+
+// TestSideLineTextFull get_line 返回完整原文（超展示截断阈值的长行不截断）
+func TestSideLineTextFull(t *testing.T) {
+	long := strings.Repeat("x", 5000) // 5000 字节，远超 2048B 展示截断
+	content := "2024-01-15 10:00:00.000 INFO " + long + "\n"
+	s := newTestSession(t, content)
+	defer s.ClearAll()
+	name := s.Files()[0].Name
+	row, err := s.SideLineText(name, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(row.Text, long) || len(row.Text) <= len(long) {
+		t.Fatalf("get_line 应包含完整原文: len=%d", len(row.Text))
+	}
+}
+
+// TestSideStackLineCap 行数到顶（500 行）时的截断提示（字节未到顶也须标注）
+func TestSideStackLineCap(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("2024-01-15 10:00:00.000 ERROR boom\n")
+	for i := 0; i < 600; i++ {
+		b.WriteString("\tat com.example.Frame.method(Frame.java:" + fmt.Sprint(i) + ")\n")
+	}
+	s := newTestSession(t, b.String())
+	defer s.ClearAll()
+	name := s.Files()[0].Name
+	rows, err := s.SideStack(name, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) < 400 || len(rows) > 500 {
+		t.Fatalf("堆栈应被截断在 500 行内: %d", len(rows))
+	}
+	if !strings.Contains(rows[len(rows)-1].Text, "500 行上限截断") {
+		t.Fatalf("行数截断应有提示: %q", rows[len(rows)-1].Text)
 	}
 }

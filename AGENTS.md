@@ -7,11 +7,13 @@
 ```bash
 wails dev                    # 开发模式（热更新）
 wails build                  # 产出 build/bin/log-hunter.exe
-go test ./internal/...       # 单测（logscan 引擎 + update 更新器 + appconf 配置）
+go test ./internal/...       # 单测（logscan 引擎 + ai 配置/诊断/客户端 + update 更新器 + appconf 配置）
+go test .                    # 绑定层单测（ai_test.go：AI 配置保存路径 + 取证工具透传）
 go run ./cmd/logscan-bench -size 1024   # 性能基准（生成 1GB 日志并计时）
 go run ./cmd/stress-bench -mode multi   # 压力基准（20GB 双模式：单文件/10 文件，耗时+内存采样，数据可复用）
 go run ./tools/genicon       # 重新生成应用图标（build/appicon.png + icon.ico）
-cd frontend && npm run build # 前端类型检查（vue-tsc --noEmit）+ 构建
+cd frontend && npm run build # 前端单测（prebuild 自动先跑）+ 类型检查（vue-tsc --noEmit）+ 构建
+cd frontend && npm test      # 前端单测（Vitest + happy-dom，后端绑定打桩；设置页草稿逻辑回归）
 ```
 
 新迭代开始时：切分支 `v<版本号>`、建迭代文档、并 bump `main.go` 的 `var version = "<版本号>-dev"`（发版由 release 脚本 ldflags 覆盖为正式号）。
@@ -26,9 +28,14 @@ internal/logscan/   核心引擎 —— 纯库，严禁 import Wails 或任何 U
 ├── histogram.go    时间直方图桶聚合（整刻度桶宽、按文件并行）与时刻跳转定位
 ├── resultlimit.go  结果上限内存自适应（Windows 物理内存查询）
 ├── unzip.go        zip 解压（内容级二进制校验、嵌套 zip 递归≤3 层、临时目录生命周期与启动清扫）
+internal/ai/         AI 诊断 —— 纯库三层，单向依赖 logscan（严禁 import Wails）
+├── client/     OpenAI 兼容协议：SSE 流式（正文/思考/工具调用）+ /models
+├── conf/       厂商档案与模型能力（ctx/vision/maxOut + 内置能力表），存 data/ai.json
+└── diag/       诊断编排：agent 循环 + 取证工具 + 源码读取授权
 internal/appconf/   应用配置持久化 —— 纯库：data/config.json（settings.theme 主题偏好+查询历史，旧顶层 theme 读时自动迁移），不含 UI
 internal/update/    应用内自动更新 —— 纯库：下载（进度回调）/sha256 强制校验（Release 缺 .sha256 即拒更）/解压限长/rename 自替换
 app.go              Wails 绑定层：包装 logscan.Session，进度事件、系统对话框、剪贴板、更新编排
+ai.go               Wails 绑定层（AI）：配置存取 / 拉取与测试 / 诊断与追问 / 授权回执，薄胶水转发 internal/ai
 main.go             Wails 入口（窗口/拖拽/主题配置/启动埋点）
 frontend/src/       Vue 3 界面（指挥舱布局：SideRail 左指挥轨+指令条+时间直方图+结果表；手写组件，无 UI 框架/无 router/无状态管理库）
 cmd/logscan-bench/  性能验收基准
@@ -69,14 +76,16 @@ docs/iterations/    迭代归档（每版本一目录，收尾规范见全局 AG
 - 详情面板右键菜单（`ContextMenu.vue`）与格式标记槽位（`ContextPanel.vue` 内 5 槽）是纯前端状态，面板卸载即清；标记优先于查询高亮（重叠区间让位），该优先级在 `HighlightText.vue` 的区间裁剪逻辑里，改动保持。
 - 大结果集靠虚拟滚动 + 分段续载，任何列表改动不得破坏这一点。行渲染用**槽位复用**（`v-for` 的 key 是段内槽位号而非全局行号，内容经 `visibleRows` computed 驱动）——改成全局行号作 key 会退化成滚动时逐行挂载/卸载；无高亮条件时走纯文本插值快速路径（跳过 HighlightText 实例化）。
 - 结果表横向画布宽**随当前渲染窗口实测伸缩**（`seenMaxPx`，非 maxLineLen 预估/grow-only——两种错法实测均有大空白或滚动条失效问题，详见 `.memory/result-canvas-layout.md`），封顶 `MAX_CANVAS_W`（20 万 px，极长行光栅化卡死防线）；超长行看全文走双击行的上下文面板。
+- 前端组件单测照 `AiSettings.spec.ts` 的写法：`createApp` 挂载 + 原生 DOM 事件 + `vi.mock` 打桩 wailsjs 绑定，测试依赖只有 vitest 与 happy-dom。**不引 `@vue/test-utils`**——它依赖 js-beautify，会带进 glob / minimatch 的安全通告（含高危）。
 
 ## 其他
 
-- 远端仓库 `https://github.com/macaoyxx/log-hunter`（main 分支）；`build/bin`、`frontend/dist`、`node_modules`、`release/` 已在 `.gitignore`。
+- 远端仓库 `https://github.com/macaoyxx/log-hunter`（main 分支）；`build/bin`、`frontend/dist`、`node_modules`、`release/`、`frontend/package-lock.json` 已在 `.gitignore`。
 - **发版脚本**（bash 跨平台，产物不进 git）：`scripts/package.sh <x.y.z>` 仅本地打包（ldflags 注入版本，Go 标准库压缩，`release/<版本>/` 只留 zip）；`scripts/publish.sh <x.y.z>` 先打包再发布，内置终端确认门。
 - **发布铁律（用户定版，v0.1.1 终稿）**：发布必须以**用户的显式发布指令**为前提（对话中说「发布/发版」即为启动信号），**无指令绝不得自行发布**。指令链即授权 AI 代执行全程：迭代收尾 → 合并 main（ff-only）→ push main → `package.sh` 打包 → push tag（`refs/tags/` 完整前缀）→ `gh release create`（附 zip + sha256，Notes 取迭代 README「范围」节）→ 发布后双核验（gh release view + 远端 tag/资产核对）。`publish.sh` 内置的终端确认门仅供用户本人手动发布场景，AI 分步执行时不跑该脚本、不代答确认门。
 - **Release Notes 必须列内容要点**：发布说明由 `publish.sh` 自动提取迭代 README 的「范围」节生成（本版变更要点清单），**不得只写版本号 + 文档链接**——Release 页要一眼看清本版改了什么；因此迭代 README 的「范围」节按发布说明口径写精炼要点。
 - gh CLI 已装（`C:\Program Files\GitHub CLI`，Git Bash 需 `export PATH` 追加）并登录 macaoyxx。
 - **GitHub 直连间歇抖动**：git push / gh 命令偶发 connection reset，重试即可，勿当成配置问题。
 - `frontend/package.json.md5` 是 Wails 的依赖指纹缓存，勿手工编辑。
+- **npm 一律走公共源**：`frontend/.npmrc` 把本项目的 registry 固定为 `registry.npmmirror.com`（只影响本项目，不改本机全局源）——不要在项目里使用内网仓库；依赖安全审计用 `npm audit --registry=https://registry.npmjs.org`（镜像未实现审计接口）。`frontend/package-lock.json` 留本地不入库：各机器 npm 源不同，锁文件里的下载地址随源变，入库会把环境地址带进公开仓库；构建按 `package.json` 的版本范围安装。
 - 换应用图标后 Windows 有系统缓存，旧图残留需重建快捷方式或重启资源管理器。

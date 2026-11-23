@@ -4,3 +4,5 @@ frontend/dist
 release/
 .zcode/
 /.idea/
+# 前端锁文件留本地：各机器 npm 源不同，锁文件里的下载地址随源变，不入库
+frontend/package-lock.json

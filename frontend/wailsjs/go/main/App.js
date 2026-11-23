@@ -18,6 +18,10 @@ export function AiFollowup(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['AiFollowup'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function AiLookupCaps(arg1) {
+  return window['go']['main']['App']['AiLookupCaps'](arg1);
+}
+
 export function AiPullModels(arg1) {
   return window['go']['main']['App']['AiPullModels'](arg1);
 }

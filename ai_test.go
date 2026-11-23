@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"log-hunter/internal/ai/conf"
+	"log-hunter/internal/ai/diag"
 	"log-hunter/internal/logscan"
 )
 
@@ -87,5 +89,57 @@ func TestToolGetLineFull(t *testing.T) {
 	out := a.toolGetLine(context.Background(), `{"file":"app.log","line":1}`)
 	if !strings.Contains(out, "完整原文") || !strings.HasSuffix(out, long) {
 		t.Fatalf("get_line 应返回完整原文: len=%d", len(out))
+	}
+}
+
+// TestSetAiConfigKeepsUserEdits 绑定层保存路径：用户的能力勾选/数字必须原样落盘。
+// 曾按「ctx/maxOut 全零 = 新增条目」在保存时按模型名重算能力——而留空恰是 UI 鼓励的
+// 常态（「留空 = 用全局默认」），留空条目的视觉勾选每次保存都被能力表覆盖。
+// 此前路由用例（TestFollowupVisionDirect）直接写 store，绕过了保存路径，所以一直是绿的
+func TestSetAiConfigKeepsUserEdits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ai.json")
+	store, err := conf.OpenPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{aiConf: store, aiDiag: &diag.Diagnoser{Conf: store}}
+	in := []conf.Model{
+		{Name: "GLM-5.3-Flash", Vision: true},      // 数字留空 + 用户勾视觉（名字不含关键词）
+		{Name: "some-vl-model"},                    // 名字含关键词 + 用户未勾：关得掉
+		{Name: "gpt-4o", Ctx: 100000, MaxOut: 500}, // 用户改过的数字与判定（能力表判 vision）
+		{Name: "deepseek-chat"},                    // 留空条目保存时不代填能力表数字
+	}
+	// 期望 = 输入原样。必须独立拷贝：保存路径曾原地改写入参切片，共用底层数组会让期望值跟着变
+	want := append([]conf.Model(nil), in...)
+	if err := a.SetAiConfig(conf.Conf{
+		Profiles:      []conf.Profile{{ID: "p1", Name: "厂商", BaseURL: "http://x", Models: in}},
+		ActiveProfile: "p1", ActiveModel: "GLM-5.3-Flash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 盘上重开读取：验证的是落盘结果而非进程内状态
+	s2, _ := conf.OpenPath(path)
+	got := s2.Get().Profiles[0].Models
+	if len(got) != len(want) {
+		t.Fatalf("模型数: %d", len(got))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("%s: 落盘 %+v，期望 %+v", want[i].Name, got[i], want[i])
+		}
+	}
+}
+
+// TestAiLookupCaps 手填名预填绑定：返回条目带模型名与预填能力；空名返回空条目
+func TestAiLookupCaps(t *testing.T) {
+	a := &App{}
+	if got := a.AiLookupCaps("gpt-4o"); got != (conf.Model{Name: "gpt-4o", Ctx: 131072, Vision: true, MaxOut: 16384}) {
+		t.Errorf("命中能力表: %+v", got)
+	}
+	if got := a.AiLookupCaps("GLM-5.3-Flash"); got != (conf.Model{Name: "GLM-5.3-Flash"}) {
+		t.Errorf("未命中应只带名字: %+v", got)
+	}
+	if got := a.AiLookupCaps(""); got != (conf.Model{}) {
+		t.Errorf("空名: %+v", got)
 	}
 }

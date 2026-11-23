@@ -116,25 +116,23 @@ func (a *App) GetAiConfig() conf.Conf {
 	return a.aiConf.Get()
 }
 
-// SetAiConfig 保存配置；新增模型条目（ctx/maxOut 全零）按内置能力表预填，已有条目不动
+// SetAiConfig 保存配置：只规整落盘，不改写任何能力字段（所见即所得）。
+// 能力表预填只在条目诞生时发生一次（AiPullModels 拉到新名 / AiLookupCaps 手填名敲定），
+// 不放在保存里做——曾按「ctx/maxOut 全零 = 新增条目」在保存时按模型名重算，而留空恰是
+// UI 鼓励的常态（「留空 = 用全局默认」），留空条目的视觉勾选每次保存都被覆盖
 func (a *App) SetAiConfig(c conf.Conf) error {
 	if err := a.aiReady(); err != nil {
 		return err
 	}
-	for pi := range c.Profiles {
-		for mi := range c.Profiles[pi].Models {
-			m := &c.Profiles[pi].Models[mi]
-			if m.Ctx == 0 && m.MaxOut == 0 {
-				// 命中能力表才填确定数字；未命中只勾 vision，数字留空走全局默认
-				if caps, hit := conf.LookupCaps(m.Name); hit {
-					m.Ctx, m.Vision, m.MaxOut = caps.Ctx, caps.Vision, caps.MaxOut
-				} else {
-					m.Vision = caps.Vision
-				}
-			}
-		}
-	}
 	return a.aiConf.Set(c)
+}
+
+// AiLookupCaps 按模型名查内置能力表，返回预填后的模型条目（设置面板手填行的模型名
+// 敲定时调用一次）。能力表只在后端，预填统一在后端做
+func (a *App) AiLookupCaps(name string) conf.Model {
+	m := conf.Model{Name: name}
+	conf.Prefill(&m)
+	return m
 }
 
 // AiPullModels 从端点拉取模型列表 + 能力预填，合并进传入档案（同名已有条目保留用户值），
@@ -165,11 +163,7 @@ func (a *App) AiPullModels(p conf.Profile) ([]conf.Model, error) {
 			continue
 		}
 		m := conf.Model{Name: id}
-		if caps, hit := conf.LookupCaps(id); hit {
-			m.Ctx, m.Vision, m.MaxOut = caps.Ctx, caps.Vision, caps.MaxOut
-		} else {
-			m.Vision = caps.Vision // 数字留空 = 全局默认
-		}
+		conf.Prefill(&m) // 新名预填一次；同名已有条目保留用户值
 		out = append(out, m)
 	}
 	return out, nil

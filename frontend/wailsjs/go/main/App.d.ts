@@ -13,6 +13,8 @@ export function AiDiagnose(arg1:string,arg2:string,arg3:string):Promise<main.AiR
 
 export function AiFollowup(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<main.AiReportOut>;
 
+export function AiLookupCaps(arg1:string):Promise<conf.Model>;
+
 export function AiPullModels(arg1:conf.Profile):Promise<Array<conf.Model>>;
 
 export function AiResetSession():Promise<void>;

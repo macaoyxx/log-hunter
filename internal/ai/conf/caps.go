@@ -74,6 +74,19 @@ func LookupCaps(name string) (caps Caps, hitTable bool) {
 	return Caps{Vision: matchVisionKeyword(n)}, false
 }
 
+// Prefill 按模型名预填能力，只在条目**诞生时**调用一次（拉取到新名 / 手填名敲定）：
+// 命中能力表填确定数字，未命中只按关键词勾 vision、数字留空走全局默认。
+// 预填仅是初始值——之后条目完全归用户，保存路径不得再按名字重算：bool 的 false 与
+// 「未指定」不可区分，按零值判「新增」会把留空条目的视觉勾选每次保存都覆盖掉
+func Prefill(m *Model) {
+	caps, hit := LookupCaps(m.Name)
+	if hit {
+		m.Ctx, m.Vision, m.MaxOut = caps.Ctx, caps.Vision, caps.MaxOut
+		return
+	}
+	m.Vision = caps.Vision
+}
+
 // knownModel 名字是否命中内置能力表（迁移判断用：旧版本曾把默认值代填进数据，
 // 只有非已知模型的「恰等于旧默认 128K」才视为代填产物）
 func knownModel(name string) bool {

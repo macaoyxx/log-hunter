@@ -168,3 +168,25 @@ func TestLookupCaps(t *testing.T) {
 		t.Errorf("未收录 vision 名应只勾视觉: %+v hit=%v", got, hit)
 	}
 }
+
+// TestPrefill 预填只在条目诞生时调用一次：命中能力表填确定数字（o 系 maxOut 0 = 不发），
+// 未命中只按关键词勾 vision、数字留空走全局默认
+func TestPrefill(t *testing.T) {
+	cases := []struct {
+		name string
+		want Model
+	}{
+		{"gpt-4o", Model{Name: "gpt-4o", Ctx: 131072, Vision: true, MaxOut: 16384}},
+		{"o3-mini", Model{Name: "o3-mini", Ctx: 200000}},              // maxOut 0 = 不发字段
+		{"some-vl-model", Model{Name: "some-vl-model", Vision: true}}, // 未命中表，仅关键词勾视觉
+		{"GLM-5.3-Flash", Model{Name: "GLM-5.3-Flash"}},               // 未命中且无关键词：全空
+		{"", Model{}}, // 空名不预填
+	}
+	for _, c := range cases {
+		got := Model{Name: c.name}
+		Prefill(&got)
+		if got != c.want {
+			t.Errorf("Prefill(%q) = %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}

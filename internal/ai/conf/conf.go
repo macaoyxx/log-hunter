@@ -4,8 +4,8 @@
 // 会话中切模型不写盘：会话请求显式携带 profileId+model，这里只存档案与默认选择。
 //
 // 存储口径：明文（用户拍板），原子写（tmp+rename），0600 权限（Windows 下 Go 映射为
-// 仅当前用户的 ACL）；模型能力（ctx/vision/maxOut）预填由绑定层在拉取模型列表后调
-// LookupCaps 合并，本包存取不猜。
+// 仅当前用户的 ACL）；模型能力（ctx/vision/maxOut）预填只在条目诞生时发生一次
+// （由绑定层调 Prefill：拉取到新名 / 手填名敲定），本包存取不猜、保存不重算。
 package conf
 
 import (
@@ -36,7 +36,9 @@ type Profile struct {
 }
 
 // Model 模型条目：能力三属性零值 = 未指定，运行时逐级回落（见 Resolve*）。
-// 用户改过即非零，不会被再次预填覆盖（预填只发生在新增条目时，由绑定层控制）
+// 预填只发生在条目诞生时（拉取到新名 / 手填名敲定，见 Prefill），之后条目完全归用户；
+// 保存不按名字重算——bool 的 false 与「未指定」同值，按零值判「新增」必覆盖留空条目
+// 的视觉勾选（vision 没有数字那种「改过即非零」的痕迹）
 type Model struct {
 	Name   string `json:"name"`
 	Ctx    int    `json:"ctx,omitempty"`

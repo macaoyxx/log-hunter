@@ -3,11 +3,11 @@
 // 左侧厂商导航列 + 右侧详情编辑（端点/密钥/模型能力表/拉取/测试），
 // 目录授权为底部独立全局分区（不与厂商混排）。
 // 编辑走本地 draft 显式保存；拉取模型/测试连接直接作用于草稿档案（不隐式落盘）
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, toRaw, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import { conf } from '../../wailsjs/go/models'
 import { AI_DEF_CTX, AI_DEF_MAXOUT } from '../constants'
-import { AiPullModels, GetAiConfig, SetAiConfig, TestAiConn } from '../../wailsjs/go/main/App'
+import { AiPullModels, AiLookupCaps, GetAiConfig, SetAiConfig, TestAiConn } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{ config: conf.Conf }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved'): void }>()
@@ -30,9 +30,19 @@ const draft = ref(cloneConf(props.config))
 // App 层旧快照，不重拉会出现「明明记住了却显示暂无授权」
 onMounted(() => {
   GetAiConfig().then((c: conf.Conf) => {
-    if (c.profiles) {
+    if (!c.profiles) return
+    if (!dirty.value) {
       draft.value = cloneConf(c)
       initAfterLoad()
+      return
+    }
+    // 用户已开始编辑：整体不替换（会盖掉刚做的改动）。但授权目录是诊断中后端直写盘的、
+    // 不经本面板产生（重拉的初衷就是带上它）——草稿里没动过授权就单独跟随最新
+    const base = JSON.parse(baselineJSON)
+    if (JSON.stringify(draft.value.grantedDirs ?? []) === JSON.stringify(base.grantedDirs ?? [])) {
+      base.grantedDirs = c.grantedDirs ?? []
+      draft.value.grantedDirs = base.grantedDirs
+      baselineJSON = JSON.stringify(base) // 基线同步：跟随最新不算用户改动
     }
   }).catch(() => {})
 })
@@ -77,10 +87,48 @@ function removeProfile(id: string) {
   if (draft.value.visionProfile === p.id) { draft.value.visionProfile = ''; draft.value.visionModel = '' }
   if (sel.value === p.id) sel.value = draft.value.profiles[Math.min(i, draft.value.profiles.length - 1)]?.id ?? null
 }
+// 手填行登记：模型名首次敲定时按能力表预填一次，之后该行完全归用户。预填不能放在保存里做——
+// 曾按「窗口/上限全零 = 新增条目」在保存时重算，而留空恰是 UI 鼓励的常态，
+// 留空条目的视觉勾选每次保存都被覆盖
+const freshRows = new WeakSet<object>()
+const prefillings = new Set<Promise<void>>() // 在途预填：保存前等它们落定
 function addModel(p: conf.Profile) {
   // ctx/maxOut 不预填数字：预填 0 会在数字输入框里显示 "0"（盖掉占位符），
   // 留空则占位符展示全局默认——「空 = 用默认」语义在 UI 上如实可见，不合适再手改
-  p.models.push(conf.Model.createFrom({ name: 'model-name', vision: false }))
+  const m = conf.Model.createFrom({ name: 'model-name', vision: false })
+  p.models.push(m)
+  freshRows.add(m)
+}
+// 模型名敲定（失焦/回车且值有变化）时预填一次；非新增行或已预填过则不动。
+// 返回的 promise 交给 Vue 的事件错误处理：预填失败进错误红条，不静默
+async function nameCommitted(m: conf.Model) {
+  const raw = toRaw(m)
+  // 空名不消耗「新增」标记：先把默认名清掉点到别处、回头再填真名，预填仍要发生
+  if (!freshRows.has(raw) || !m.name.trim()) return
+  freshRows.delete(raw)
+  const p: Promise<void> = prefill(m).finally(() => prefillings.delete(p))
+  prefillings.add(p)
+  await p
+}
+async function prefill(m: conf.Model) {
+  try {
+    const got = await AiLookupCaps(m.name)
+    // 只补空、只勾上：用户先于预填填的数字/勾选不被覆盖
+    if (m.ctx == null && got.ctx) m.ctx = got.ctx
+    if (m.maxOut == null && got.maxOut) m.maxOut = got.maxOut
+    if (got.vision) m.vision = true
+  } catch (e) {
+    throw new Error(`模型「${m.name}」能力预填失败：${String(e)}`)
+  }
+}
+// 数字输入框统一归一：清空或非整数一律视为留空（= 用默认）。不用 v-model.number——
+// 它对清空的输入框留下空串 ''（解析不了就原样返回），发到 Go 的 int 字段会反序列化
+// 报错，整次保存被拒
+function toNum(e: Event): number | undefined {
+  const v = (e.target as HTMLInputElement).value.trim()
+  if (v === '') return undefined
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.trunc(n) : undefined
 }
 function profileById(id: string | undefined) { return draft.value.profiles.find(p => p.id === id) }
 // 档案状态灯：测试连通=绿 / 已配端点未测=蓝 / 未配置=灰
@@ -95,6 +143,8 @@ async function persist(): Promise<boolean> {
   saving.value = true
   saveErr.value = ''
   try {
+    // 在途预填落定再保存：敲完名字立刻点保存时，预填的数字/视觉不落空
+    await Promise.allSettled([...prefillings])
     await SetAiConfig(draft.value)
     baselineJSON = JSON.stringify(draft.value)
     return true
@@ -138,15 +188,47 @@ function clearAllGrants() {
 function removeGrant(g: string) {
   draft.value.grantedDirs = (draft.value.grantedDirs ?? []).filter(x => x !== g)
 }
-const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型（select 不能嵌套）
-  const out: { id: string; label: string; name: string }[] = []
-  for (const p of draft.value.profiles) {
-    for (const m of p.models) {
-      if (m.vision) out.push({ id: p.id + '/' + m.name, label: `${p.name} / ${m.name}`, name: m.name })
-    }
-  }
-  return out
+// 视觉模型下拉只列所选视觉厂商的视觉条目（与主通道「厂商 → 模型」级联一致）。
+// 曾展平所有厂商的视觉模型却只存模型名：可选到别家模型（中转打错厂商）、
+// 厂商留空时保存被清空、取消勾选后下拉显示「不指定」而旧值仍被视觉中转使用
+const visionOptions = computed(() => profileById(draft.value.visionProfile)?.models.filter(m => m.vision) ?? [])
+// 当前视觉模型不在选项里（存量数据：旧版保存曾把该条目的视觉勾选写回 false）——
+// 下拉兜底显示真名、不清值：中转只认 visionModel 不认勾选，清了等于静默关掉一个能用的通道
+const visionModelDangling = computed(() => {
+  const v = draft.value.visionModel
+  return !!v && !visionOptions.value.some(m => m.name === v)
 })
+// 兜底选项的说明按实际情况区分：该厂商里有这个模型但没勾视觉 / 该厂商里没有这个模型
+const visionModelFallbackLabel = computed(() => {
+  const v = draft.value.visionModel
+  const exists = profileById(draft.value.visionProfile)?.models.some(m => m.name === v)
+  return exists ? `${v}（未勾视觉）` : `${v}（不在该厂商）`
+})
+// 引用自愈：已选值此前有效、选项变化（取消视觉 / 删行 / 重拉）后才失效即清空。
+// 「此前有效」必须看 prev——打开设置时重拉替换草稿也会让选项重算，无条件清空会让
+// 存量悬空值在用户没做任何编辑时就被改掉（「草稿未保存」凭空出现、保存即丢）
+watch(visionOptions, (list, prev) => {
+  const v = draft.value.visionModel
+  if (v && prev.some(m => m.name === v) && !list.some(m => m.name === v)) draft.value.visionModel = ''
+})
+// 切视觉厂商是用户的显式动作：不在新厂商视觉列表里的值一律清空（含存量悬空值）——
+// 留着会变成「厂商是乙、模型是甲的 X」，中转打到错误的厂商。新厂商从事件目标读，
+// 不依赖 v-model 与 @change 的触发先后；打开时的重拉不触发本处理器，存量悬空值不受影响
+function onVisionVendorChange(e: Event) {
+  const pid = (e.target as HTMLSelectElement).value
+  const v = draft.value.visionModel
+  if (v && !profileById(pid)?.models.some(m => m.name === v && m.vision)) draft.value.visionModel = ''
+}
+watch(() => draft.value.activeProfile, pid => {
+  // 切主厂商：旧主模型不在新厂商里即清空（留着会让下拉显示「不指定」而值仍在）
+  const v = draft.value.activeModel
+  if (v && !profileById(pid)?.models.some(m => m.name === v)) draft.value.activeModel = ''
+})
+function removeModel(p: conf.Profile, mi: number) {
+  const [m] = p.models.splice(mi, 1)
+  // 被删行正是当前主模型：一并清引用（视觉模型的引用由上面 visionOptions 的 watch 清）
+  if (draft.value.activeProfile === p.id && draft.value.activeModel === m.name) draft.value.activeModel = ''
+}
 </script>
 
 <template>
@@ -178,13 +260,14 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
         <label class="st-g">
           <span>视觉通道（贴图，可与主通道不同厂商）</span>
           <div class="st-g-pair">
-            <select v-model="draft.visionProfile">
+            <select v-model="draft.visionProfile" @change="onVisionVendorChange($event)">
               <option value="">（不配置）</option>
               <option v-for="p in draft.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
             <select v-model="draft.visionModel">
-              <option value="">（不指定）</option>
-              <option v-for="o in visionOptions" :key="o.id" :value="o.name">{{ o.label }}</option>
+              <option value="">{{ !draft.visionProfile ? '（请先选视觉厂商）' : (visionOptions.length ? '（不指定）' : '（该厂商暂无视觉模型）') }}</option>
+              <option v-if="visionModelDangling" :value="draft.visionModel">{{ visionModelFallbackLabel }}</option>
+              <option v-for="m in visionOptions" :key="m.name" :value="m.name">{{ m.name }}</option>
             </select>
           </div>
         </label>
@@ -200,8 +283,8 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
         <label class="st-g st-g-s">
           <span>全局默认（窗口 / 响应）</span>
           <div class="st-g-pair">
-            <input v-model.number="draft.ctxTokens" type="number" min="1000" title="上下文窗口（token）" />
-            <input v-model.number="draft.maxOutTokens" type="number" min="256" title="响应上限（token）" />
+            <input :value="draft.ctxTokens ?? ''" type="number" min="1000" title="上下文窗口（token）" @input="draft.ctxTokens = toNum($event)" />
+            <input :value="draft.maxOutTokens ?? ''" type="number" min="256" title="响应上限（token）" @input="draft.maxOutTokens = toNum($event)" />
           </div>
         </label>
       </div>
@@ -230,15 +313,15 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
             </div>
 
             <div class="st-d-scroll">
-              <div class="st-sub">窗口/上限留空 = 用全局默认（{{ (((draft.ctxTokens ?? AI_DEF_CTX) / AI_DEF_CTX).toFixed(1).replace(/\.0$/, '')) }}M / {{ draft.maxOutTokens ?? AI_DEF_MAXOUT }}）；视觉 = 支持图片输入，vision/vl 类自动勾选</div>
+              <div class="st-sub">窗口/上限留空 = 用全局默认（{{ (((draft.ctxTokens ?? AI_DEF_CTX) / AI_DEF_CTX).toFixed(1).replace(/\.0$/, '')) }}M / {{ draft.maxOutTokens ?? AI_DEF_MAXOUT }}）；视觉 = 支持图片输入，拉取或填名时按能力表自动预填（可改）</div>
               <div v-for="(m, mi) in cur.models" :key="mi" class="st-model">
-                <input v-model="m.name" class="st-m-name mono-in" placeholder="模型名" />
-                <input v-model.number="m.ctx" class="st-m-num mono-in" type="number" min="0" title="上下文窗口（token，留空用全局默认）" :placeholder="String(draft.ctxTokens ?? AI_DEF_CTX)" />
+                <input v-model="m.name" class="st-m-name mono-in" placeholder="模型名" @change="nameCommitted(m)" />
+                <input :value="m.ctx ?? ''" class="st-m-num mono-in" type="number" min="0" title="上下文窗口（token，留空用全局默认）" :placeholder="String(draft.ctxTokens ?? AI_DEF_CTX)" @input="m.ctx = toNum($event)" />
                 <label class="st-m-vis" title="支持图片输入（纯文本模型贴图时走视觉厂商转述）">
                   <input v-model="m.vision" type="checkbox" />视觉
                 </label>
-                <input v-model.number="m.maxOut" class="st-m-num mono-in" type="number" min="0" title="单次响应上限（留空用全局默认）" :placeholder="String(draft.maxOutTokens ?? AI_DEF_MAXOUT)" />
-                <button class="st-m-del" title="移除模型" @click="cur.models.splice(mi, 1)"><AppIcon name="x" :size="10" /></button>
+                <input :value="m.maxOut ?? ''" class="st-m-num mono-in" type="number" min="0" title="单次响应上限（留空用全局默认）" :placeholder="String(draft.maxOutTokens ?? AI_DEF_MAXOUT)" @input="m.maxOut = toNum($event)" />
+                <button class="st-m-del" title="移除模型" @click="removeModel(cur, mi)"><AppIcon name="x" :size="10" /></button>
               </div>
               <div class="st-rowbtns">
                 <button @click="addModel(cur)"><AppIcon name="plus" :size="11" />手填模型</button>
@@ -281,7 +364,7 @@ const visionOptions = computed(() => { // 展平：所有厂商的 vision 模型
 
       <div class="st-foot">
         <span class="st-note">存 exe 同级 data/ai.json（明文）· 模型级能力优先，留空回落全局默认</span>
-        <span v-if="saveErr" class="st-err">{{ saveErr }}</span>
+        <span v-if="saveErr" class="st-err" :title="saveErr">{{ saveErr }}</span>
         <button class="ghost" @click="emit('close')">取消</button>
         <button class="primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
       </div>
